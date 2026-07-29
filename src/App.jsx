@@ -16,7 +16,17 @@ import {
   CheckCircle2,
   Clock,
   AlertTriangle,
+  BarChart3,
 } from "lucide-react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
 
 const COLORS = {
   bg: "#10151A",
@@ -360,6 +370,7 @@ export default function App() {
     { id: "clientes", label: "Clientes", Icon: Users },
     { id: "planes", label: "Planes", Icon: Wifi },
     { id: "facturacion", label: "Facturación", Icon: FileText },
+    { id: "reportes", label: "Reportes", Icon: BarChart3 },
   ];
 
   return (
@@ -619,6 +630,7 @@ export default function App() {
             </div>
           </div>
         )}
+        {tab === "reportes" && <ReportesTab clientes={clientes} planes={planes} facturas={facturas} />}
       </main>
 
       {clientModal && (
@@ -641,6 +653,124 @@ export default function App() {
           onSave={saveInvoice}
         />
       )}
+    </div>
+  );
+}
+
+function ReportesTab({ clientes, planes, facturas }) {
+  const hoy = new Date();
+
+  // Ingresos cobrados por mes (últimos 6 meses, según fecha_vencimiento)
+  const meses = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    meses.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleDateString("es-MX", { month: "short" }) });
+  }
+  const ingresosPorMes = meses.map((m) => {
+    const total = facturas
+      .filter((f) => f.estado === "pagada" && f.fecha_vencimiento && f.fecha_vencimiento.startsWith(m.key))
+      .reduce((s, f) => s + Number(f.monto || 0), 0);
+    return { mes: m.label, ingresos: total };
+  });
+
+  // Totales generales
+  const totalFacturado = facturas.reduce((s, f) => s + Number(f.monto || 0), 0);
+  const totalCobrado = facturas.filter((f) => f.estado === "pagada").reduce((s, f) => s + Number(f.monto || 0), 0);
+  const totalPendiente = facturas.filter((f) => f.estado === "pendiente").reduce((s, f) => s + Number(f.monto || 0), 0);
+  const totalVencido = facturas
+    .filter((f) => f.estado !== "pagada" && f.fecha_vencimiento && new Date(f.fecha_vencimiento) < hoy)
+    .reduce((s, f) => s + Number(f.monto || 0), 0);
+  const tasaCobro = totalFacturado > 0 ? Math.round((totalCobrado / totalFacturado) * 100) : 0;
+
+  // Ingresos por plan (según plan actual del cliente, sobre facturas pagadas)
+  const ingresosPorPlan = planes.map((p) => {
+    const clientesDelPlan = clientes.filter((c) => c.plan_id === p.id).map((c) => c.id);
+    const total = facturas
+      .filter((f) => f.estado === "pagada" && clientesDelPlan.includes(f.cliente_id))
+      .reduce((s, f) => s + Number(f.monto || 0), 0);
+    return { nombre: p.nombre, total };
+  }).sort((a, b) => b.total - a.total);
+
+  // Mejores clientes por total facturado (pagado)
+  const porCliente = {};
+  facturas.filter((f) => f.estado === "pagada").forEach((f) => {
+    porCliente[f.cliente_id] = (porCliente[f.cliente_id] || 0) + Number(f.monto || 0);
+  });
+  const topClientes = Object.entries(porCliente)
+    .map(([id, total]) => ({ cliente: clientes.find((c) => c.id === id)?.nombre || "Cliente eliminado", total }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+
+  return (
+    <div>
+      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Reportes</h1>
+      <p className="text-sm mb-6" style={{ color: COLORS.dim }}>Visión financiera de tu operación.</p>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
+        {[
+          { label: "Total facturado", value: money(totalFacturado), color: COLORS.text },
+          { label: "Cobrado", value: money(totalCobrado), color: COLORS.active },
+          { label: "Pendiente", value: money(totalPendiente), color: COLORS.warn },
+          { label: "Vencido", value: money(totalVencido), color: COLORS.danger },
+          { label: "Tasa de cobro", value: `${tasaCobro}%`, color: COLORS.accent },
+        ].map((k) => (
+          <div key={k.label} className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-xs mb-2" style={{ color: COLORS.dim }}>{k.label}</div>
+            <div className="font-mono text-lg font-medium" style={{ color: k.color }}>{k.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>INGRESOS COBRADOS · ÚLTIMOS 6 MESES</h2>
+      <div className="rounded-xl p-4 mb-8" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, height: 260 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={ingresosPorMes}>
+            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+            <XAxis dataKey="mes" stroke={COLORS.dim} fontSize={12} />
+            <YAxis stroke={COLORS.dim} fontSize={12} />
+            <Tooltip
+              contentStyle={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 8 }}
+              labelStyle={{ color: COLORS.text }}
+              formatter={(v) => money(v)}
+            />
+            <Bar dataKey="ingresos" fill={COLORS.accent} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        <div>
+          <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>INGRESOS POR PLAN</h2>
+          <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+            {ingresosPorPlan.length === 0 ? (
+              <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>Sin datos.</div>
+            ) : (
+              ingresosPorPlan.map((p) => (
+                <div key={p.nombre} className="flex items-center justify-between px-4 py-3 text-sm" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+                  <span>{p.nombre}</span>
+                  <span className="font-mono" style={{ color: COLORS.dim }}>{money(p.total)}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>TOP 5 CLIENTES</h2>
+          <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+            {topClientes.length === 0 ? (
+              <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>Sin datos.</div>
+            ) : (
+              topClientes.map((c) => (
+                <div key={c.cliente} className="flex items-center justify-between px-4 py-3 text-sm" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+                  <span>{c.cliente}</span>
+                  <span className="font-mono" style={{ color: COLORS.dim }}>{money(c.total)}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
