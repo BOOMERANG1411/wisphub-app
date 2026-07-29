@@ -143,7 +143,65 @@ function Button({ children, onClick, variant = "primary", type = "button", ...re
   );
 }
 
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error) setError("Correo o contraseña incorrectos.");
+    else onLogin(data.session);
+  };
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center px-4"
+      style={{ backgroundColor: COLORS.bg, color: COLORS.text }}
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="w-full max-w-sm rounded-xl p-6"
+        style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
+      >
+        <div className="flex items-center gap-2 mb-6">
+          <SignalHigh size={20} color={COLORS.accent} />
+          <span className="font-display font-semibold text-lg">WispHub</span>
+        </div>
+        {error && (
+          <div
+            className="mb-4 rounded-lg px-3 py-2 text-xs"
+            style={{ backgroundColor: COLORS.danger + "1A", color: COLORS.danger, border: `1px solid ${COLORS.danger}40` }}
+          >
+            {error}
+          </div>
+        )}
+        <Field label="Correo">
+          <input type="email" required style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Field label="Contraseña">
+          <input type="password" required style={inputStyle} value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+        <button
+          type="submit"
+          disabled={busy}
+          className="w-full rounded-lg px-3 py-2 text-sm font-medium mt-2"
+          style={{ backgroundColor: COLORS.accent, color: "#fff", opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "Entrando…" : "Entrar"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
+  const [session, setSession] = useState(undefined);
   const [clientes, setClientes] = useState([]);
   const [planes, setPlanes] = useState([]);
   const [facturas, setFacturas] = useState([]);
@@ -154,6 +212,14 @@ export default function App() {
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -174,8 +240,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    if (session) loadAll();
+  }, [session, loadAll]);
+
+  if (session === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.bg, color: COLORS.dim }}>
+        Cargando…
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginScreen onLogin={setSession} />;
+  }
 
   const planById = (id) => planes.find((p) => p.id === id);
 
@@ -313,6 +391,13 @@ export default function App() {
             </button>
           ))}
         </div>
+        <button
+          onClick={() => supabase.auth.signOut()}
+          className="hidden md:block text-xs px-2 py-2 mt-4 text-left"
+          style={{ color: COLORS.dim }}
+        >
+          Cerrar sesión
+        </button>
       </nav>
 
       <main className="flex-1 order-1 md:order-2 px-4 md:px-8 py-6 md:py-8 pb-24 md:pb-8">
