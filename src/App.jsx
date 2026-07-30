@@ -21,7 +21,11 @@ import {
   Navigation,
   MessageCircle,
   CalendarPlus,
+  Upload,
+  Eye,
+  EyeOff,
 } from "lucide-react";
+import Papa from "papaparse";
 import {
   BarChart,
   Bar,
@@ -324,6 +328,7 @@ export default function App() {
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
   const [prorrogaModal, setProrrogaModal] = useState(null);
+  const [importModal, setImportModal] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -383,6 +388,33 @@ export default function App() {
     if (session) loadAll();
   }, [session, loadAll]);
 
+  const importarClientes = async (filas) => {
+    const estadosValidos = ["activo", "moroso", "suspendido"];
+    const payload = filas.map((f) => {
+      const estadoNorm = (f.estado || "").toLowerCase().trim();
+      return {
+        nombre: f.nombre,
+        telefono: f.telefono || null,
+        direccion: f.direccion || null,
+        estado: estadosValidos.includes(estadoNorm) ? estadoNorm : "activo",
+        ciclo: [15, 30].includes(Number(f.ciclo)) ? Number(f.ciclo) : 15,
+        pppoe_usuario: f.pppoe_usuario || null,
+        pppoe_secret: f.pppoe_secret || null,
+        ip_asignada: f.ip_asignada || null,
+        equipo: f.equipo || null,
+        cedula: f.cedula || null,
+        fecha_instalacion: f.fecha_instalacion || null,
+        plan_id: f.plan_id || null,
+      };
+    });
+    const { error } = await supabase.from("clientes").insert(payload);
+    if (error) setErrorMsg(error.message);
+    else {
+      setImportModal(false);
+      loadAll();
+    }
+  };
+
   if (session === undefined) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.bg, color: COLORS.dim }}>
@@ -408,6 +440,12 @@ export default function App() {
       lat: form.lat || null,
       lng: form.lng || null,
       ciclo: Number(form.ciclo) || 15,
+      pppoe_usuario: form.pppoe_usuario || null,
+      pppoe_secret: form.pppoe_secret || null,
+      ip_asignada: form.ip_asignada || null,
+      equipo: form.equipo || null,
+      cedula: form.cedula || null,
+      fecha_instalacion: form.fecha_instalacion || null,
     };
     const q = form.id
       ? supabase.from("clientes").update(payload).eq("id", form.id)
@@ -626,9 +664,14 @@ export default function App() {
                 <h1 className="font-display text-xl md:text-2xl font-semibold">Clientes</h1>
                 <p className="text-sm" style={{ color: COLORS.dim }}>{clientes.length} registrados</p>
               </div>
-              <Button onClick={() => setClientModal({})}>
-                <Plus size={16} /> Nuevo cliente
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setImportModal(true)}>
+                  <Upload size={16} /> Importar CSV
+                </Button>
+                <Button onClick={() => setClientModal({})}>
+                  <Plus size={16} /> Nuevo cliente
+                </Button>
+              </div>
             </div>
 
             <div className="relative mb-4 max-w-xs">
@@ -676,6 +719,12 @@ export default function App() {
                               lat: c.lat,
                               lng: c.lng,
                               ciclo: c.ciclo,
+                              pppoe_usuario: c.pppoe_usuario,
+                              pppoe_secret: c.pppoe_secret,
+                              ip_asignada: c.ip_asignada,
+                              equipo: c.equipo,
+                              cedula: c.cedula,
+                              fecha_instalacion: c.fecha_instalacion,
                             })
                           }
                           style={{ color: COLORS.dim }}
@@ -829,6 +878,13 @@ export default function App() {
           factura={prorrogaModal}
           onCancel={() => setProrrogaModal(null)}
           onSave={(fecha) => saveProrroga(prorrogaModal.id, fecha)}
+        />
+      )}
+      {importModal && (
+        <ImportForm
+          planes={planes}
+          onCancel={() => setImportModal(false)}
+          onImport={importarClientes}
         />
       )}
     </div>
@@ -1084,6 +1140,114 @@ function ProrrogaForm({ factura, onCancel, onSave }) {
   );
 }
 
+const CAMPOS_IMPORTABLES = [
+  { key: "nombre", label: "Nombre", requerido: true },
+  { key: "telefono", label: "Teléfono" },
+  { key: "direccion", label: "Dirección" },
+  { key: "estado", label: "Estado (activo/moroso/suspendido)" },
+  { key: "ciclo", label: "Ciclo (15 o 30)" },
+  { key: "plan", label: "Nombre del plan" },
+  { key: "pppoe_usuario", label: "Usuario PPPoE" },
+  { key: "pppoe_secret", label: "Secret PPPoE" },
+  { key: "ip_asignada", label: "IP asignada" },
+  { key: "equipo", label: "Equipo / router" },
+  { key: "cedula", label: "Cédula" },
+  { key: "fecha_instalacion", label: "Fecha de instalación (AAAA-MM-DD)" },
+];
+
+function ImportForm({ planes, onCancel, onImport }) {
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [mapping, setMapping] = useState({});
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const cols = results.meta.fields || [];
+        setHeaders(cols);
+        setRows(results.data);
+        // auto-mapeo por coincidencia de nombre
+        const auto = {};
+        CAMPOS_IMPORTABLES.forEach((c) => {
+          const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
+          if (match) auto[c.key] = match;
+        });
+        setMapping(auto);
+      },
+      error: () => setError("No se pudo leer el archivo. Verifica que sea un CSV válido."),
+    });
+  };
+
+  const confirmar = () => {
+    if (!mapping.nombre) {
+      setError("Debes indicar cuál columna es el nombre del cliente.");
+      return;
+    }
+    const filas = rows.map((r) => {
+      const obj = {};
+      CAMPOS_IMPORTABLES.forEach((c) => {
+        const header = mapping[c.key];
+        obj[c.key] = header ? (r[header] || "").trim() : "";
+      });
+      if (obj.plan) {
+        const planEncontrado = planes.find((p) => p.nombre.toLowerCase().trim() === obj.plan.toLowerCase().trim());
+        obj.plan_id = planEncontrado ? planEncontrado.id : null;
+      }
+      return obj;
+    }).filter((f) => f.nombre);
+    onImport(filas);
+  };
+
+  return (
+    <Modal title="Importar clientes desde CSV" onClose={onCancel}>
+      {headers.length === 0 ? (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+            Exporta tus clientes desde WispHub (u otro sistema) como archivo CSV, y súbelo aquí.
+          </p>
+          <input type="file" accept=".csv" onChange={handleFile} style={{ color: COLORS.text, fontSize: 13 }} />
+          {error && <p className="text-xs mt-3" style={{ color: COLORS.danger }}>{error}</p>}
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+            {fileName} · {rows.length} filas detectadas. Indica qué columna corresponde a cada dato (deja "No usar" si no aplica).
+          </p>
+          <div className="max-h-80 overflow-y-auto pr-1">
+            {CAMPOS_IMPORTABLES.map((c) => (
+              <Field key={c.key} label={c.label + (c.requerido ? " *" : "")}>
+                <select
+                  style={inputStyle}
+                  value={mapping[c.key] || ""}
+                  onChange={(e) => setMapping({ ...mapping, [c.key]: e.target.value })}
+                >
+                  <option value="">No usar</option>
+                  {headers.map((h) => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+          </div>
+          {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+            <Button onClick={confirmar}>Importar {rows.length} clientes</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function ClientForm({ initial, planes, onCancel, onSave }) {
   const [form, setForm] = useState({
     id: initial.id,
@@ -1095,7 +1259,15 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
     lat: initial.lat || null,
     lng: initial.lng || null,
     ciclo: initial.ciclo || 15,
+    pppoe_usuario: initial.pppoe_usuario || "",
+    pppoe_secret: initial.pppoe_secret || "",
+    ip_asignada: initial.ip_asignada || "",
+    equipo: initial.equipo || "",
+    cedula: initial.cedula || "",
+    fecha_instalacion: initial.fecha_instalacion || "",
   });
+  const [verSecret, setVerSecret] = useState(false);
+  const [mostrarTecnico, setMostrarTecnico] = useState(false);
   return (
     <Modal title={initial.id ? "Editar cliente" : "Nuevo cliente"} onClose={onCancel}>
       <Field label="Nombre">
@@ -1114,6 +1286,52 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
         </select>
       </Field>
       <LocationPicker lat={form.lat} lng={form.lng} onChange={(lat, lng) => setForm({ ...form, lat, lng })} />
+
+      <button
+        type="button"
+        onClick={() => setMostrarTecnico(!mostrarTecnico)}
+        className="text-xs mb-3"
+        style={{ color: COLORS.accent }}
+      >
+        {mostrarTecnico ? "Ocultar datos técnicos" : "Mostrar datos técnicos (PPPoE, IP, equipo...)"}
+      </button>
+
+      {mostrarTecnico && (
+        <div className="rounded-lg p-3 mb-3" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+          <Field label="Cédula">
+            <input style={inputStyle} value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} />
+          </Field>
+          <Field label="Usuario PPPoE">
+            <input style={inputStyle} value={form.pppoe_usuario} onChange={(e) => setForm({ ...form, pppoe_usuario: e.target.value })} />
+          </Field>
+          <Field label="Secret / clave PPPoE">
+            <div className="relative">
+              <input
+                type={verSecret ? "text" : "password"}
+                style={{ ...inputStyle, paddingRight: 34 }}
+                value={form.pppoe_secret}
+                onChange={(e) => setForm({ ...form, pppoe_secret: e.target.value })}
+              />
+              <button
+                type="button"
+                onClick={() => setVerSecret(!verSecret)}
+                style={{ position: "absolute", right: 8, top: 8, color: COLORS.dim }}
+              >
+                {verSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </Field>
+          <Field label="IP asignada">
+            <input style={inputStyle} value={form.ip_asignada} onChange={(e) => setForm({ ...form, ip_asignada: e.target.value })} />
+          </Field>
+          <Field label="Equipo / router">
+            <input style={inputStyle} value={form.equipo} onChange={(e) => setForm({ ...form, equipo: e.target.value })} />
+          </Field>
+          <Field label="Fecha de instalación">
+            <input type="date" style={inputStyle} value={form.fecha_instalacion} onChange={(e) => setForm({ ...form, fecha_instalacion: e.target.value })} />
+          </Field>
+        </div>
+      )}
       <Field label="Plan">
         <select style={inputStyle} value={form.planId} onChange={(e) => setForm({ ...form, planId: e.target.value })}>
           {planes.map((p) => (
