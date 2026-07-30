@@ -144,6 +144,19 @@ function EstadoBadge({ estado }) {
   );
 }
 
+function CicloBadge({ ciclo }) {
+  const es30 = ciclo === 30;
+  const color = es30 ? COLORS.warn : COLORS.accent;
+  return (
+    <span
+      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      style={{ color, backgroundColor: color + "1A", border: `1px solid ${color}40` }}
+    >
+      {es30 ? "Corte 30" : "Corte 15"}
+    </span>
+  );
+}
+
 function FacturaBadge({ estado }) {
   const map = {
     pagada: { color: COLORS.active, label: "Pagada", Icon: CheckCircle2 },
@@ -628,11 +641,12 @@ export default function App() {
                       <div>
                         <div className="text-sm font-medium">{c.nombre}</div>
                         <div className="text-xs" style={{ color: COLORS.dim }}>
-                          {c.telefono} · {c.direccion} · {plan ? plan.nombre : "Sin plan"}
+                          {c.telefono} · {c.direccion} · {plan ? plan.nombre : "Sin plan"} · Corte {c.ciclo === 30 ? "fin de mes" : "día 15"}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <EstadoBadge estado={c.estado} />
+                        <CicloBadge ciclo={c.ciclo} />
                         <button
                           onClick={() =>
                             setClientModal({
