@@ -1196,12 +1196,15 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
   const [mapping, setMapping] = useState({});
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
+  const [filasConError, setFilasConError] = useState(0);
   const [importando, setImportando] = useState(false);
 
   const procesarResultados = (results) => {
     const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
     setHeaders(cols);
     setRows(results.data);
+    const erroresDetectados = (results.errors || []).length;
+    setFilasConError(erroresDetectados);
     const auto = {};
     CAMPOS_IMPORTABLES.forEach((c) => {
       const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
@@ -1210,31 +1213,30 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     setMapping(auto);
   };
 
-  const handleFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setFileName(file.name);
-    setError("");
+  const intentarParseo = (file, delimitadores) => {
+    const [actual, ...resto] = delimitadores;
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
+      delimiter: actual,
       complete: (results) => {
-        const colsDetectadas = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
-        // Si con coma solo se detectó 1 columna útil, probablemente el archivo usa punto y coma.
-        if (colsDetectadas.length <= 1) {
-          Papa.parse(file, {
-            header: true,
-            skipEmptyLines: true,
-            delimiter: ";",
-            complete: (r2) => procesarResultados(r2),
-            error: () => setError("No se pudo leer el archivo. Verifica que sea un CSV válido."),
-          });
+        const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+        if (cols.length <= 1 && resto.length > 0) {
+          intentarParseo(file, resto);
         } else {
           procesarResultados(results);
         }
       },
       error: () => setError("No se pudo leer el archivo. Verifica que sea un CSV válido."),
     });
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    intentarParseo(file, [",", "\t", ";"]);
   };
 
   const confirmar = async () => {
@@ -1257,7 +1259,7 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     const vistos = new Set();
     filas.forEach((f) => {
       const clave = (f.plan || "").toLowerCase().trim();
-      if (f.plan && !vistos.has(clave)) {
+      if (f.plan && f.plan.length < 100 && !vistos.has(clave)) {
         vistos.add(clave);
         unicos.push({ nombre: f.plan, precio: parseFloat(f.plan_precio) || 0 });
       }
@@ -1283,6 +1285,11 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
           <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
             {fileName} · {rows.length} filas detectadas. Indica qué columna corresponde a cada dato (deja "No usar" si no aplica).
           </p>
+          {filasConError > 0 && (
+            <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ backgroundColor: COLORS.warn + "1A", color: COLORS.warn, border: `1px solid ${COLORS.warn}40` }}>
+              {filasConError} fila(s) tienen un formato irregular (probablemente una comilla o carácter especial suelto) y se omitirán al importar.
+            </div>
+          )}
           <div className="rounded-lg p-2 mb-3 overflow-x-auto" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
             <p className="text-xs mb-1" style={{ color: COLORS.dim }}>Vista previa (primeras 2 filas):</p>
             {rows.slice(0, 2).map((r, i) => (
