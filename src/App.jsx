@@ -433,20 +433,14 @@ export default function App() {
         .select("*")
         .eq("user_id", session.user.id)
         .maybeSingle()
-        .then(async ({ data }) => {
-          if (data) {
-            setPerfil(data);
-          } else {
-            const nuevo = { user_id: session.user.id, nombre: session.user.email, rol: "cajero", comision_tipo: "porcentaje", comision_valor: 0 };
-            await supabase.from("perfiles").insert(nuevo);
-            setPerfil(nuevo);
-          }
-        });
+        .then(({ data }) => setPerfil(data || { rol: "sin_acceso", nombre: session.user.email }));
     }
   }, [session, loadAll]);
 
+  const esAdmin = perfil?.rol === "admin";
   const esCajero = perfil?.rol === "cajero";
   const miUserId = session?.user?.id;
+  const tienePermiso = (id) => esAdmin || (perfil?.permisos || []).includes(id);
 
   const ensurePlanes = async (unicos) => {
     const faltantes = unicos.filter(
@@ -590,10 +584,29 @@ export default function App() {
     if (session && perfil && perfil.rol !== "cajero") cargarPuntosDePago();
   }, [session, perfil, cargarPuntosDePago]);
 
-  const guardarComision = async (userId, tipo, valor, nombre) => {
-    const { error } = await supabase.from("perfiles").upsert({ user_id: userId, comision_tipo: tipo, comision_valor: valor, nombre, rol: "cajero" });
+  const guardarComision = async (userId, tipo, valor, nombre, permisos) => {
+    const payload = { comision_tipo: tipo, comision_valor: valor, nombre };
+    if (permisos) payload.permisos = permisos;
+    const { error } = await supabase.from("perfiles").update(payload).eq("user_id", userId);
     if (error) setErrorMsg(error.message);
     else cargarPuntosDePago();
+  };
+
+  const crearPuntoDePago = async (datos) => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const authToken = sessionData?.session?.access_token;
+    const resp = await fetch("/api/create-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...datos, authToken }),
+    });
+    const resultado = await resp.json();
+    if (!resp.ok) {
+      setErrorMsg(resultado.error || "No se pudo crear el usuario.");
+      return false;
+    }
+    await cargarPuntosDePago();
+    return true;
   };
 
   const liquidarCajero = async (cajero) => {
@@ -708,6 +721,19 @@ export default function App() {
 
   if (!session) {
     return <LoginScreen onLogin={setSession} />;
+  }
+
+  if (perfil && perfil.rol === "sin_acceso") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center" style={{ backgroundColor: COLORS.bg, color: COLORS.text }}>
+        <p className="text-sm" style={{ color: COLORS.dim }}>
+          Tu cuenta no tiene un perfil asignado todavía. Pídele al administrador que te dé acceso desde "Puntos de pago".
+        </p>
+        <button onClick={() => supabase.auth.signOut()} className="text-xs underline" style={{ color: COLORS.accent }}>
+          Cerrar sesión
+        </button>
+      </div>
+    );
   }
 
   const planById = (id) => planes.find((p) => p.id === id);
@@ -861,9 +887,7 @@ export default function App() {
     { id: "caja", label: "Caja", Icon: Wallet },
     { id: "puntos-pago", label: "Puntos de pago", Icon: DollarSign },
   ];
-  const NAV = esCajero
-    ? NAV_COMPLETO.filter((n) => ["dashboard", "clientes", "facturacion"].includes(n.id))
-    : NAV_COMPLETO;
+  const NAV = esAdmin ? NAV_COMPLETO : NAV_COMPLETO.filter((n) => tienePermiso(n.id));
 
   return (
     <div
@@ -1262,14 +1286,14 @@ export default function App() {
             onEliminar={deleteMovimiento}
           />
         )}
-        {tab === "puntos-pago" && !esCajero && (
+        {tab === "puntos-pago" && esAdmin && (
           <PuntosDePagoTab
             puntosDePago={puntosDePago}
             liquidaciones={liquidaciones}
             facturas={facturas}
-            onCargar={cargarPuntosDePago}
             onGuardarComision={guardarComision}
             onLiquidar={liquidarCajero}
+            onCrear={crearPuntoDePago}
           />
         )}
       </main>
@@ -1609,8 +1633,91 @@ function HistorialMensualTabla({ historialMensual, onGuardar, onEliminar }) {
   );
 }
 
-function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComision, onLiquidar }) {
+const AREAS_DISPONIBLES = [
+  { id: "clientes", label: "Clientes" },
+  { id: "facturacion", label: "Facturación" },
+  { id: "planes", label: "Planes" },
+  { id: "reportes", label: "Reportes" },
+  { id: "mapa", label: "Mapa" },
+  { id: "caja", label: "Caja" },
+];
+
+function CrearPuntoDePagoForm({ onCancel, onCrear }) {
+  const [form, setForm] = useState({ nombre: "", email: "", password: "", permisos: ["clientes", "facturacion"], comision_tipo: "porcentaje", comision_valor: 0 });
+  const [error, setError] = useState("");
+  const [creando, setCreando] = useState(false);
+
+  const togglePermiso = (id) => {
+    setForm((f) => ({
+      ...f,
+      permisos: f.permisos.includes(id) ? f.permisos.filter((p) => p !== id) : [...f.permisos, id],
+    }));
+  };
+
+  const confirmar = async () => {
+    if (!form.nombre || !form.email || form.password.length < 6) {
+      setError("Nombre, correo y una contraseña de al menos 6 caracteres son obligatorios.");
+      return;
+    }
+    setCreando(true);
+    setError("");
+    const ok = await onCrear({ ...form, rol: "cajero", comision_valor: parseFloat(form.comision_valor) || 0 });
+    setCreando(false);
+    if (ok) onCancel();
+    else setError("No se pudo crear. Revisa el aviso rojo arriba de la página.");
+  };
+
+  return (
+    <Modal title="Nuevo punto de pago" onClose={onCancel}>
+      <Field label="Nombre">
+        <input style={inputStyle} value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
+      </Field>
+      <Field label="Correo (para iniciar sesión)">
+        <input type="email" style={inputStyle} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+      </Field>
+      <Field label="Contraseña">
+        <input type="text" style={inputStyle} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+      </Field>
+      <Field label="Áreas que puede ver">
+        <div className="flex flex-wrap gap-2">
+          {AREAS_DISPONIBLES.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => togglePermiso(a.id)}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium"
+              style={{
+                backgroundColor: form.permisos.includes(a.id) ? COLORS.accent : COLORS.panel2,
+                color: form.permisos.includes(a.id) ? "#fff" : COLORS.text,
+                border: `1px solid ${COLORS.border}`,
+              }}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Tipo de comisión">
+        <select style={inputStyle} value={form.comision_tipo} onChange={(e) => setForm({ ...form, comision_tipo: e.target.value })}>
+          <option value="porcentaje">Porcentaje de lo cobrado</option>
+          <option value="fijo">Monto fijo por factura</option>
+        </select>
+      </Field>
+      <Field label={form.comision_tipo === "fijo" ? "Monto por factura" : "Porcentaje (%)"}>
+        <input type="number" style={inputStyle} value={form.comision_valor} onChange={(e) => setForm({ ...form, comision_valor: e.target.value })} />
+      </Field>
+      {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
+      <div className="flex justify-end gap-2 mt-4">
+        <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button onClick={confirmar} disabled={creando}>{creando ? "Creando…" : "Crear"}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComision, onLiquidar, onCrear }) {
   const [editando, setEditando] = useState({});
+  const [mostrarCrear, setMostrarCrear] = useState(false);
 
   const cajeros = puntosDePago.filter((p) => p.rol === "cajero");
 
@@ -1624,18 +1731,26 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
     return { cantidad: pendientes.length, monto, comision };
   };
 
-  const iniciarEdicion = (c) => setEditando({ user_id: c.user_id, comision_tipo: c.comision_tipo || "porcentaje", comision_valor: c.comision_valor || 0, nombre: c.nombre || "" });
+  const iniciarEdicion = (c) => setEditando({ user_id: c.user_id, comision_tipo: c.comision_tipo || "porcentaje", comision_valor: c.comision_valor || 0, nombre: c.nombre || "", permisos: c.permisos || [] });
   const guardarEdicion = () => {
-    onGuardarComision(editando.user_id, editando.comision_tipo, parseFloat(editando.comision_valor) || 0, editando.nombre);
+    onGuardarComision(editando.user_id, editando.comision_tipo, parseFloat(editando.comision_valor) || 0, editando.nombre, editando.permisos);
     setEditando({});
+  };
+  const toggleEditPermiso = (id) => {
+    setEditando((e) => ({ ...e, permisos: (e.permisos || []).includes(id) ? e.permisos.filter((p) => p !== id) : [...(e.permisos || []), id] }));
   };
 
   return (
     <div>
-      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Puntos de pago</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="font-display text-xl md:text-2xl font-semibold">Puntos de pago</h1>
+        <Button onClick={() => setMostrarCrear(true)}><Plus size={16} /> Nuevo punto de pago</Button>
+      </div>
       <p className="text-sm mb-6" style={{ color: COLORS.dim }}>
-        Cada cajero se crea en Supabase (Authentication → Users) y aparece aquí automáticamente cuando entra por primera vez.
+        Crea aquí mismo el usuario y elige qué partes de la app puede ver.
       </p>
+
+      {mostrarCrear && <CrearPuntoDePagoForm onCancel={() => setMostrarCrear(false)} onCrear={onCrear} />}
 
       {cajeros.length === 0 ? (
         <div className="rounded-xl p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
@@ -1661,6 +1776,25 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
                     </Field>
                     <Field label={editando.comision_tipo === "fijo" ? "Monto por factura" : "Porcentaje (%)"}>
                       <input type="number" style={inputStyle} value={editando.comision_valor} onChange={(e) => setEditando({ ...editando, comision_valor: e.target.value })} />
+                    </Field>
+                    <Field label="Áreas que puede ver">
+                      <div className="flex flex-wrap gap-2">
+                        {AREAS_DISPONIBLES.map((a) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            onClick={() => toggleEditPermiso(a.id)}
+                            className="rounded-lg px-2 py-1 text-xs font-medium"
+                            style={{
+                              backgroundColor: (editando.permisos || []).includes(a.id) ? COLORS.accent : COLORS.panel2,
+                              color: (editando.permisos || []).includes(a.id) ? "#fff" : COLORS.text,
+                              border: `1px solid ${COLORS.border}`,
+                            }}
+                          >
+                            {a.label}
+                          </button>
+                        ))}
+                      </div>
                     </Field>
                     <div className="flex justify-end gap-2">
                       <Button variant="ghost" onClick={() => setEditando({})}>Cancelar</Button>
