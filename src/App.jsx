@@ -17,6 +17,8 @@ import {
   Clock,
   AlertTriangle,
   BarChart3,
+  MapPin,
+  Navigation,
 } from "lucide-react";
 import {
   BarChart,
@@ -27,6 +29,19 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+import "leaflet/dist/leaflet.css";
+import L from "leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
+
+const markerIcon = (color) =>
+  L.divIcon({
+    className: "",
+    html: `<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #10151A;box-shadow:0 0 0 2px ${color}55"></div>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+
+const DEFAULT_CENTER = [19.4517, -70.697]; // Santiago de los Caballeros, RD
 
 const COLORS = {
   bg: "#10151A",
@@ -275,6 +290,8 @@ export default function App() {
       direccion: form.direccion,
       plan_id: form.planId || null,
       estado: form.estado,
+      lat: form.lat || null,
+      lng: form.lng || null,
     };
     const q = form.id
       ? supabase.from("clientes").update(payload).eq("id", form.id)
@@ -371,6 +388,7 @@ export default function App() {
     { id: "planes", label: "Planes", Icon: Wifi },
     { id: "facturacion", label: "Facturación", Icon: FileText },
     { id: "reportes", label: "Reportes", Icon: BarChart3 },
+    { id: "mapa", label: "Mapa", Icon: MapPin },
   ];
 
   return (
@@ -530,6 +548,8 @@ export default function App() {
                               direccion: c.direccion,
                               planId: c.plan_id,
                               estado: c.estado,
+                              lat: c.lat,
+                              lng: c.lng,
                             })
                           }
                           style={{ color: COLORS.dim }}
@@ -631,6 +651,7 @@ export default function App() {
           </div>
         )}
         {tab === "reportes" && <ReportesTab clientes={clientes} planes={planes} facturas={facturas} />}
+        {tab === "mapa" && <MapaTab clientes={clientes} planById={planById} />}
       </main>
 
       {clientModal && (
@@ -775,6 +796,100 @@ function ReportesTab({ clientes, planes, facturas }) {
   );
 }
 
+function MapaTab({ clientes, planById }) {
+  const conUbicacion = clientes.filter((c) => c.lat && c.lng);
+  const center =
+    conUbicacion.length > 0
+      ? [conUbicacion[0].lat, conUbicacion[0].lng]
+      : DEFAULT_CENTER;
+  const colorByEstado = { activo: COLORS.active, moroso: COLORS.danger, suspendido: COLORS.dim };
+
+  return (
+    <div>
+      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Mapa de cobertura</h1>
+      <p className="text-sm mb-4" style={{ color: COLORS.dim }}>
+        {conUbicacion.length} de {clientes.length} clientes con ubicación registrada.
+      </p>
+      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}`, height: "60vh" }}>
+        <MapContainer center={center} zoom={conUbicacion.length > 0 ? 13 : 12} style={{ width: "100%", height: "100%" }}>
+          <TileLayer
+            attribution='&copy; OpenStreetMap contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {conUbicacion.map((c) => {
+            const plan = planById(c.plan_id);
+            return (
+              <Marker key={c.id} position={[c.lat, c.lng]} icon={markerIcon(colorByEstado[c.estado] || COLORS.accent)}>
+                <Popup>
+                  <b>{c.nombre}</b>
+                  <br />
+                  {plan ? plan.nombre : "Sin plan"} · {c.estado}
+                  <br />
+                  {c.direccion}
+                </Popup>
+              </Marker>
+            );
+          })}
+        </MapContainer>
+      </div>
+      {conUbicacion.length === 0 && (
+        <p className="text-xs mt-3" style={{ color: COLORS.dim }}>
+          Aún no tienes clientes con ubicación. Edita un cliente y marca su punto en el mapa.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LocationPicker({ lat, lng, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const position = lat && lng ? [lat, lng] : DEFAULT_CENTER;
+
+  function ClickCatcher() {
+    useMapEvents({
+      click(e) {
+        onChange(e.latlng.lat, e.latlng.lng);
+      },
+    });
+    return null;
+  }
+
+  const useMyLocation = () => {
+    setBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        onChange(pos.coords.latitude, pos.coords.longitude);
+        setBusy(false);
+      },
+      () => setBusy(false),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="block text-xs" style={{ color: COLORS.dim }}>Ubicación (toca el mapa para marcar)</span>
+        <button
+          type="button"
+          onClick={useMyLocation}
+          className="inline-flex items-center gap-1 text-xs"
+          style={{ color: COLORS.accent }}
+        >
+          <Navigation size={12} /> {busy ? "Buscando…" : "Usar mi ubicación"}
+        </button>
+      </div>
+      <div className="rounded-lg overflow-hidden" style={{ height: 180, border: `1px solid ${COLORS.border}` }}>
+        <MapContainer center={position} zoom={lat && lng ? 15 : 12} style={{ width: "100%", height: "100%" }}>
+          <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <ClickCatcher />
+          {lat && lng && <Marker position={[lat, lng]} icon={markerIcon(COLORS.accent)} />}
+        </MapContainer>
+      </div>
+    </div>
+  );
+}
+
 function ClientForm({ initial, planes, onCancel, onSave }) {
   const [form, setForm] = useState({
     id: initial.id,
@@ -783,6 +898,8 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
     direccion: initial.direccion || "",
     planId: initial.planId || (planes[0] && planes[0].id) || "",
     estado: initial.estado || "activo",
+    lat: initial.lat || null,
+    lng: initial.lng || null,
   });
   return (
     <Modal title={initial.id ? "Editar cliente" : "Nuevo cliente"} onClose={onCancel}>
@@ -795,6 +912,7 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
       <Field label="Dirección">
         <input style={inputStyle} value={form.direccion} onChange={(e) => setForm({ ...form, direccion: e.target.value })} />
       </Field>
+      <LocationPicker lat={form.lat} lng={form.lng} onChange={(lat, lng) => setForm({ ...form, lat, lng })} />
       <Field label="Plan">
         <select style={inputStyle} value={form.planId} onChange={(e) => setForm({ ...form, planId: e.target.value })}>
           {planes.map((p) => (
