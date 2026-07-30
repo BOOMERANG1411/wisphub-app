@@ -1198,6 +1198,18 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
   const [error, setError] = useState("");
   const [importando, setImportando] = useState(false);
 
+  const procesarResultados = (results) => {
+    const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+    setHeaders(cols);
+    setRows(results.data);
+    const auto = {};
+    CAMPOS_IMPORTABLES.forEach((c) => {
+      const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
+      if (match) auto[c.key] = match;
+    });
+    setMapping(auto);
+  };
+
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1207,15 +1219,19 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
-        const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
-        setHeaders(cols);
-        setRows(results.data);
-        const auto = {};
-        CAMPOS_IMPORTABLES.forEach((c) => {
-          const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
-          if (match) auto[c.key] = match;
-        });
-        setMapping(auto);
+        const colsDetectadas = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+        // Si con coma solo se detectó 1 columna útil, probablemente el archivo usa punto y coma.
+        if (colsDetectadas.length <= 1) {
+          Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            delimiter: ";",
+            complete: (r2) => procesarResultados(r2),
+            error: () => setError("No se pudo leer el archivo. Verifica que sea un CSV válido."),
+          });
+        } else {
+          procesarResultados(results);
+        }
       },
       error: () => setError("No se pudo leer el archivo. Verifica que sea un CSV válido."),
     });
@@ -1235,7 +1251,7 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
         obj[c.key] = header ? (r[header] || "").trim() : "";
       });
       return obj;
-    }).filter((f) => f.nombre);
+    }).filter((f) => f.nombre && f.nombre.length < 150);
 
     const unicos = [];
     const vistos = new Set();
@@ -1267,6 +1283,14 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
           <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
             {fileName} · {rows.length} filas detectadas. Indica qué columna corresponde a cada dato (deja "No usar" si no aplica).
           </p>
+          <div className="rounded-lg p-2 mb-3 overflow-x-auto" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+            <p className="text-xs mb-1" style={{ color: COLORS.dim }}>Vista previa (primeras 2 filas):</p>
+            {rows.slice(0, 2).map((r, i) => (
+              <div key={i} className="text-xs mb-1 font-mono" style={{ color: COLORS.text, whiteSpace: "nowrap" }}>
+                {headers.slice(0, 4).map((h) => `${h}: ${(r[h] || "").slice(0, 20)}`).join(" | ")}
+              </div>
+            ))}
+          </div>
           <div className="max-h-80 overflow-y-auto pr-1">
             {CAMPOS_IMPORTABLES.map((c) => (
               <Field key={c.key} label={c.label + (c.requerido ? " *" : "")}>
