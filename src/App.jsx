@@ -323,6 +323,7 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState("");
   const [tab, setTab] = useState("dashboard");
   const [facturaFiltro, setFacturaFiltro] = useState("todas");
+  const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [search, setSearch] = useState("");
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
@@ -692,9 +693,9 @@ export default function App() {
     );
   }
 
-  const filteredClients = clientes.filter((c) =>
-    (c.nombre || "").toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredClients = clientes
+    .filter((c) => (c.nombre || "").toLowerCase().includes(search.toLowerCase()))
+    .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro);
 
   const totalActivos = clientes.filter((c) => c.estado === "activo").length;
   const totalMorosos = clientes.filter((c) => c.estado === "moroso").length;
@@ -771,14 +772,15 @@ export default function App() {
             </p>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
               {[
-                { label: "Clientes activos", value: totalActivos, color: COLORS.active },
-                { label: "Clientes morosos", value: totalMorosos, color: COLORS.danger },
-                { label: "Ingresos cobrados", value: money(ingresosMes), color: COLORS.text },
-                { label: "Por cobrar", value: money(pendientesMonto), color: COLORS.warn },
+                { label: "Clientes activos", value: totalActivos, color: COLORS.active, ir: () => { setClienteFiltro("activo"); setTab("clientes"); } },
+                { label: "Clientes morosos", value: totalMorosos, color: COLORS.danger, ir: () => { setClienteFiltro("moroso"); setTab("clientes"); } },
+                { label: "Ingresos cobrados", value: money(ingresosMes), color: COLORS.text, ir: () => { setFacturaFiltro("pagada"); setTab("facturacion"); } },
+                { label: "Por cobrar", value: money(pendientesMonto), color: COLORS.warn, ir: () => { setFacturaFiltro("por_cobrar"); setTab("facturacion"); } },
               ].map((k) => (
-                <div
+                <button
                   key={k.label}
-                  className="rounded-xl p-4"
+                  onClick={k.ir}
+                  className="rounded-xl p-4 text-left transition-opacity hover:opacity-80"
                   style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
                 >
                   <div className="text-xs mb-2" style={{ color: COLORS.dim }}>
@@ -787,7 +789,7 @@ export default function App() {
                   <div className="font-mono text-xl font-medium" style={{ color: k.color }}>
                     {k.value}
                   </div>
-                </div>
+                </button>
               ))}
             </div>
 
@@ -848,6 +850,16 @@ export default function App() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
+
+            {clienteFiltro !== "todos" && (
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
+                <EstadoBadge estado={clienteFiltro} />
+                <button onClick={() => setClienteFiltro("todos")} className="text-xs underline" style={{ color: COLORS.accent }}>
+                  Quitar filtro
+                </button>
+              </div>
+            )}
 
             <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
               {filteredClients.length === 0 ? (
@@ -962,7 +974,16 @@ export default function App() {
             {facturaFiltro !== "todas" && (
               <div className="flex items-center gap-2 mb-4">
                 <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
-                <FacturaBadge estado={facturaFiltro} />
+                {facturaFiltro === "por_cobrar" ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+                    style={{ color: COLORS.warn, backgroundColor: COLORS.warn + "1A", border: `1px solid ${COLORS.warn}40` }}
+                  >
+                    Por cobrar (pendientes + vencidas)
+                  </span>
+                ) : (
+                  <FacturaBadge estado={facturaFiltro} />
+                )}
                 <button onClick={() => setFacturaFiltro("todas")} className="text-xs underline" style={{ color: COLORS.accent }}>
                   Quitar filtro
                 </button>
@@ -973,7 +994,12 @@ export default function App() {
                 const facturasFiltradas = facturas
                   .slice()
                   .reverse()
-                  .filter((f) => facturaFiltro === "todas" || estadoVisual(f, new Date()) === facturaFiltro);
+                  .filter((f) => {
+                    if (facturaFiltro === "todas") return true;
+                    const visual = estadoVisual(f, new Date());
+                    if (facturaFiltro === "por_cobrar") return visual !== "pagada";
+                    return visual === facturaFiltro;
+                  });
                 if (facturasFiltradas.length === 0) {
                   return (
                     <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
