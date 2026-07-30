@@ -24,6 +24,9 @@ import {
   Upload,
   Eye,
   EyeOff,
+  Wallet,
+  TrendingDown,
+  TrendingUp,
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -335,6 +338,7 @@ export default function App() {
   const [clientes, setClientes] = useState([]);
   const [planes, setPlanes] = useState([]);
   const [facturas, setFacturas] = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [tab, setTab] = useState("dashboard");
@@ -344,6 +348,8 @@ export default function App() {
   const [invoiceModal, setInvoiceModal] = useState(null);
   const [prorrogaModal, setProrrogaModal] = useState(null);
   const [importModal, setImportModal] = useState(false);
+  const [pagoModal, setPagoModal] = useState(null);
+  const [movimientoModal, setMovimientoModal] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -356,13 +362,14 @@ export default function App() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
-    const [c, p, f] = await Promise.all([
+    const [c, p, f, m] = await Promise.all([
       supabase.from("clientes").select("*").order("nombre"),
       supabase.from("planes").select("*").order("precio"),
       supabase.from("facturas").select("*").order("fecha_vencimiento", { ascending: true }),
+      supabase.from("movimientos").select("*").order("fecha", { ascending: false }),
     ]);
-    if (c.error || p.error || f.error) {
-      setErrorMsg((c.error || p.error || f.error).message);
+    if (c.error || p.error || f.error || m.error) {
+      setErrorMsg((c.error || p.error || f.error || m.error).message);
       setLoading(false);
       return;
     }
@@ -371,6 +378,7 @@ export default function App() {
     setClientes(c.data || []);
     setPlanes(p.data || []);
     setFacturas(f2.data || f.data || []);
+    setMovimientos(m.data || []);
     setLoading(false);
   }, []);
 
@@ -535,8 +543,28 @@ export default function App() {
       loadAll();
     }
   };
-  const markPaid = async (id) => {
-    const { error } = await supabase.from("facturas").update({ estado: "pagada" }).eq("id", id);
+  const markPaid = async (id, formaPago) => {
+    const { error } = await supabase.from("facturas").update({ estado: "pagada", forma_pago: formaPago }).eq("id", id);
+    if (error) setErrorMsg(error.message);
+    else {
+      setPagoModal(null);
+      loadAll();
+    }
+  };
+  const saveMovimiento = async (mov) => {
+    const payload = { fecha: mov.fecha, tipo: mov.tipo, descripcion: mov.descripcion, monto: mov.monto, forma_pago: mov.forma_pago };
+    const q = mov.id
+      ? supabase.from("movimientos").update(payload).eq("id", mov.id)
+      : supabase.from("movimientos").insert(payload);
+    const { error } = await q;
+    if (error) setErrorMsg(error.message);
+    else {
+      setMovimientoModal(null);
+      loadAll();
+    }
+  };
+  const deleteMovimiento = async (id) => {
+    const { error } = await supabase.from("movimientos").delete().eq("id", id);
     if (error) setErrorMsg(error.message);
     else loadAll();
   };
@@ -585,6 +613,7 @@ export default function App() {
     { id: "facturacion", label: "Facturación", Icon: FileText },
     { id: "reportes", label: "Reportes", Icon: BarChart3 },
     { id: "mapa", label: "Mapa", Icon: MapPin },
+    { id: "caja", label: "Caja", Icon: Wallet },
   ];
 
   return (
@@ -848,7 +877,7 @@ export default function App() {
                         <span className="font-mono text-sm">{money(f.monto)}</span>
                         <FacturaBadge estado={visual} />
                         {f.estado !== "pagada" && (
-                          <Button variant="ghost" onClick={() => markPaid(f.id)}>
+                          <Button variant="ghost" onClick={() => setPagoModal(f)}>
                             Marcar pagada
                           </Button>
                         )}
@@ -883,8 +912,16 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === "reportes" && <ReportesTab clientes={clientes} planes={planes} facturas={facturas} />}
+        {tab === "reportes" && <ReportesTab clientes={clientes} planes={planes} facturas={facturas} movimientos={movimientos} />}
         {tab === "mapa" && <MapaTab clientes={clientes} planById={planById} />}
+        {tab === "caja" && (
+          <CajaTab
+            movimientos={movimientos}
+            onNuevo={() => setMovimientoModal({})}
+            onEditar={(m) => setMovimientoModal(m)}
+            onEliminar={deleteMovimiento}
+          />
+        )}
       </main>
 
       {clientModal && (
@@ -922,11 +959,148 @@ export default function App() {
           onImport={importarClientes}
         />
       )}
+      {pagoModal && (
+        <PagoForm
+          factura={pagoModal}
+          onCancel={() => setPagoModal(null)}
+          onSave={(formaPago) => markPaid(pagoModal.id, formaPago)}
+        />
+      )}
+      {movimientoModal && (
+        <MovimientoForm
+          initial={movimientoModal}
+          onCancel={() => setMovimientoModal(null)}
+          onSave={saveMovimiento}
+        />
+      )}
     </div>
   );
 }
 
-function ReportesTab({ clientes, planes, facturas }) {
+const FORMAS_PAGO = [
+  { value: "efectivo", label: "Efectivo" },
+  { value: "transferencia", label: "Transferencia Bancaria" },
+  { value: "saldo_favor", label: "Saldo a Favor" },
+];
+
+function PagoForm({ factura, onCancel, onSave }) {
+  const [formaPago, setFormaPago] = useState("efectivo");
+  return (
+    <Modal title="Marcar factura como pagada" onClose={onCancel}>
+      <p className="text-xs mb-3" style={{ color: COLORS.dim }}>Monto: {money(factura.monto)}</p>
+      <Field label="Forma de pago">
+        <select style={inputStyle} value={formaPago} onChange={(e) => setFormaPago(e.target.value)}>
+          {FORMAS_PAGO.map((f) => (
+            <option key={f.value} value={f.value}>{f.label}</option>
+          ))}
+        </select>
+      </Field>
+      <div className="flex justify-end gap-2 mt-4">
+        <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button onClick={() => onSave(formaPago)}>Confirmar pago</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function MovimientoForm({ initial, onCancel, onSave }) {
+  const [form, setForm] = useState({
+    id: initial.id,
+    tipo: initial.tipo || "gasto",
+    descripcion: initial.descripcion || "",
+    monto: initial.monto || "",
+    forma_pago: initial.forma_pago || "efectivo",
+    fecha: initial.fecha || fmtISO(new Date()),
+  });
+  return (
+    <Modal title={initial.id ? "Editar movimiento" : "Nuevo movimiento"} onClose={onCancel}>
+      <Field label="Tipo">
+        <select style={inputStyle} value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
+          <option value="gasto">Gasto</option>
+          <option value="otro_ingreso">Otro ingreso</option>
+        </select>
+      </Field>
+      <Field label="Descripción">
+        <input style={inputStyle} value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
+      </Field>
+      <Field label="Monto">
+        <input type="number" style={inputStyle} value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} />
+      </Field>
+      <Field label="Forma de pago">
+        <select style={inputStyle} value={form.forma_pago} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
+          {FORMAS_PAGO.map((f) => (
+            <option key={f.value} value={f.value}>{f.label}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Fecha">
+        <input type="date" style={inputStyle} value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
+      </Field>
+      <div className="flex justify-end gap-2 mt-4">
+        <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button onClick={() => form.descripcion && form.monto && onSave(form)}>Guardar</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
+  const gastos = movimientos.filter((m) => m.tipo === "gasto");
+  const ingresos = movimientos.filter((m) => m.tipo === "otro_ingreso");
+  const totalGastos = gastos.reduce((s, m) => s + Number(m.monto || 0), 0);
+  const totalIngresos = ingresos.reduce((s, m) => s + Number(m.monto || 0), 0);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="font-display text-xl md:text-2xl font-semibold">Caja</h1>
+          <p className="text-sm" style={{ color: COLORS.dim }}>Gastos y otros ingresos, fuera de la facturación de clientes.</p>
+        </div>
+        <Button onClick={onNuevo}><Plus size={16} /> Nuevo movimiento</Button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mb-6">
+        <div className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+          <div className="flex items-center gap-2 text-xs mb-2" style={{ color: COLORS.dim }}><TrendingUp size={14} /> Otros ingresos</div>
+          <div className="font-mono text-lg" style={{ color: COLORS.active }}>{money(totalIngresos)}</div>
+        </div>
+        <div className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+          <div className="flex items-center gap-2 text-xs mb-2" style={{ color: COLORS.dim }}><TrendingDown size={14} /> Gastos</div>
+          <div className="font-mono text-lg" style={{ color: COLORS.danger }}>{money(totalGastos)}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+        {movimientos.length === 0 ? (
+          <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
+            Aún no has registrado gastos ni otros ingresos.
+          </div>
+        ) : (
+          movimientos.map((m) => (
+            <div key={m.id} className="flex items-center justify-between px-4 py-3" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+              <div>
+                <div className="text-sm font-medium">{m.descripcion}</div>
+                <div className="text-xs" style={{ color: COLORS.dim }}>
+                  {m.fecha} · {FORMAS_PAGO.find((f) => f.value === m.forma_pago)?.label || m.forma_pago} · {m.tipo === "gasto" ? "Gasto" : "Otro ingreso"}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-sm" style={{ color: m.tipo === "gasto" ? COLORS.danger : COLORS.active }}>
+                  {m.tipo === "gasto" ? "-" : "+"}{money(m.monto)}
+                </span>
+                <button onClick={() => onEditar(m)} style={{ color: COLORS.dim }}><Pencil size={15} /></button>
+                <button onClick={() => onEliminar(m.id)} style={{ color: COLORS.dim }}><Trash2 size={15} /></button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportesTab({ clientes, planes, facturas, movimientos }) {
   const hoy = new Date();
 
   // Ingresos cobrados por mes (últimos 6 meses, según fecha_vencimiento)
@@ -1005,6 +1179,58 @@ function ReportesTab({ clientes, planes, facturas }) {
             <Bar dataKey="ingresos" fill={COLORS.accent} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+      </div>
+
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>RESUMEN CONTABLE POR FORMA DE PAGO</h2>
+      <div className="rounded-xl overflow-x-auto mb-8" style={{ border: `1px solid ${COLORS.border}` }}>
+        <table className="w-full text-sm" style={{ backgroundColor: COLORS.panel }}>
+          <thead>
+            <tr style={{ color: COLORS.dim, borderBottom: `1px solid ${COLORS.border}` }}>
+              <th className="text-left px-4 py-2 font-normal">Forma de pago</th>
+              <th className="text-right px-4 py-2 font-normal">Pagos Internet</th>
+              <th className="text-right px-4 py-2 font-normal">Otros Ingresos</th>
+              <th className="text-right px-4 py-2 font-normal">Gastos</th>
+              <th className="text-right px-4 py-2 font-normal">Total</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {FORMAS_PAGO.map((fp) => {
+              const pagosInternet = facturas
+                .filter((f) => f.estado === "pagada" && f.forma_pago === fp.value)
+                .reduce((s, f) => s + Number(f.monto || 0), 0);
+              const otrosIngresos = movimientos
+                .filter((m) => m.tipo === "otro_ingreso" && m.forma_pago === fp.value)
+                .reduce((s, m) => s + Number(m.monto || 0), 0);
+              const gastos = movimientos
+                .filter((m) => m.tipo === "gasto" && m.forma_pago === fp.value)
+                .reduce((s, m) => s + Number(m.monto || 0), 0);
+              const total = pagosInternet + otrosIngresos - gastos;
+              return (
+                <tr key={fp.value} style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                  <td className="px-4 py-2 font-sans" style={{ color: COLORS.text }}>{fp.label}</td>
+                  <td className="text-right px-4 py-2">{money(pagosInternet)}</td>
+                  <td className="text-right px-4 py-2" style={{ color: COLORS.active }}>{money(otrosIngresos)}</td>
+                  <td className="text-right px-4 py-2" style={{ color: COLORS.danger }}>{money(gastos)}</td>
+                  <td className="text-right px-4 py-2 font-medium" style={{ color: COLORS.text }}>{money(total)}</td>
+                </tr>
+              );
+            })}
+            {(() => {
+              const pagadasTotal = facturas.filter((f) => f.estado === "pagada").reduce((s, f) => s + Number(f.monto || 0), 0);
+              const ingresosTotal = movimientos.filter((m) => m.tipo === "otro_ingreso").reduce((s, m) => s + Number(m.monto || 0), 0);
+              const gastosTotal = movimientos.filter((m) => m.tipo === "gasto").reduce((s, m) => s + Number(m.monto || 0), 0);
+              return (
+                <tr style={{ borderTop: `1px solid ${COLORS.border}`, backgroundColor: COLORS.panel2 }}>
+                  <td className="px-4 py-2 font-sans font-semibold" style={{ color: COLORS.text }}>Saldo Final</td>
+                  <td className="text-right px-4 py-2 font-semibold">{money(pagadasTotal)}</td>
+                  <td className="text-right px-4 py-2 font-semibold" style={{ color: COLORS.active }}>{money(ingresosTotal)}</td>
+                  <td className="text-right px-4 py-2 font-semibold" style={{ color: COLORS.danger }}>{money(gastosTotal)}</td>
+                  <td className="text-right px-4 py-2 font-semibold" style={{ color: COLORS.accent }}>{money(pagadasTotal + ingresosTotal - gastosTotal)}</td>
+                </tr>
+              );
+            })()}
+          </tbody>
+        </table>
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
