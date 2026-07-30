@@ -518,19 +518,22 @@ export default function App() {
   };
 
   const importarUbicaciones = async (filas) => {
-    let actualizados = 0, sinCliente = 0;
+    let actualizados = 0, sinCliente = 0, sinCoordenadas = 0;
+    const tareas = [];
     for (const f of filas) {
       const cliente = clientes.find((c) => c.nombre.toLowerCase().trim() === f.cliente.toLowerCase().trim());
       if (!cliente) { sinCliente++; continue; }
       const lat = parseFloat(f.lat);
       const lng = parseFloat(f.lng);
-      if (isNaN(lat) || isNaN(lng)) continue;
-      await supabase.from("clientes").update({ lat, lng }).eq("id", cliente.id);
-      actualizados++;
+      if (isNaN(lat) || isNaN(lng)) { sinCoordenadas++; continue; }
+      tareas.push(
+        supabase.from("clientes").update({ lat, lng }).eq("id", cliente.id).then(() => { actualizados++; })
+      );
     }
+    await Promise.allSettled(tareas);
     setImportUbicacionModal(false);
     loadAll();
-    setErrorMsg(`Ubicaciones actualizadas: ${actualizados} · Sin cliente coincidente: ${sinCliente}`);
+    setErrorMsg(`Ubicaciones actualizadas: ${actualizados} · Sin cliente coincidente: ${sinCliente} · Sin coordenadas válidas: ${sinCoordenadas}`);
   };
 
   if (session === undefined) {
