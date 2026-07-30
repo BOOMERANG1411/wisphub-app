@@ -1,0 +1,14 @@
+{
+  "name": "ISP-Control",
+  "short_name": "ISP-Control",
+  "description": "Gestión de clientes, planes y facturación",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10151A",
+  "theme_color": "#10151A",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
