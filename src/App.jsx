@@ -192,7 +192,7 @@ function Modal({ title, onClose, children }) {
     >
       <div
         className="w-full max-w-md rounded-xl p-5"
-        style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
+        style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, maxHeight: "90vh", overflowY: "auto" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
