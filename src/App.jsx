@@ -51,6 +51,63 @@ function whatsappLink(telefono, mensaje) {
   return `https://wa.me/${conCodigo}?text=${encodeURIComponent(mensaje)}`;
 }
 
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+const fmtISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const ultimoDiaMes = (year, month) => new Date(year, month + 1, 0).getDate();
+
+// Para el ciclo del cliente y la fecha de hoy, calcula si ya toca generar factura
+// y cuáles son sus fechas clave (vencimiento y suspensión).
+function cicloInfo(ciclo, hoy) {
+  const y = hoy.getFullYear();
+  const m = hoy.getMonth();
+  const dia = hoy.getDate();
+  if (ciclo === 15) {
+    const generar = dia >= 10;
+    const vencimiento = new Date(y, m, 15);
+    const suspension = new Date(y, m, 20);
+    return { generar, vencimiento, suspension, periodo: `${MESES[m]} ${y}` };
+  }
+  // ciclo 30 (fin de mes)
+  const generar = dia >= 25;
+  const vencimiento = new Date(y, m, ultimoDiaMes(y, m));
+  const suspensionMes = m === 11 ? 0 : m + 1;
+  const suspensionAnio = m === 11 ? y + 1 : y;
+  const suspension = new Date(suspensionAnio, suspensionMes, 5);
+  return { generar, vencimiento, suspension, periodo: `${MESES[m]} ${y}` };
+}
+
+// Estado "visual" de una factura: si venció el plazo de gracia y sigue sin pagar, se ve como vencida,
+// sin necesidad de cambiar el estado guardado.
+function estadoVisual(factura, hoy) {
+  if (factura.estado === "pagada") return "pagada";
+  if (!factura.fecha_vencimiento) return factura.estado;
+  const venc = new Date(factura.fecha_vencimiento + "T00:00:00");
+  const dia = venc.getDate();
+  let suspension;
+  if (dia === 15) {
+    suspension = new Date(venc.getFullYear(), venc.getMonth(), 20);
+  } else {
+    const sm = venc.getMonth() === 11 ? 0 : venc.getMonth() + 1;
+    const sy = venc.getMonth() === 11 ? venc.getFullYear() + 1 : venc.getFullYear();
+    suspension = new Date(sy, sm, 5);
+  }
+  return hoy >= suspension ? "vencida" : "pendiente";
+}
+
+function mensajeRecordatorio(cliente, factura) {
+  const venc = factura.fecha_vencimiento ? new Date(factura.fecha_vencimiento + "T00:00:00") : null;
+  const dia = venc ? venc.getDate() : null;
+  let fechaLimite, fechaSuspension;
+  if (dia === 15) {
+    fechaLimite = "19";
+    fechaSuspension = `la mañana del 20`;
+  } else {
+    fechaLimite = "4";
+    fechaSuspension = `la mañana del 5`;
+  }
+  return `Hola ${cliente.nombre}, te recordamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} vence el ${factura.fecha_vencimiento || ""}. Para evitar la suspensión del servicio, te pedimos realizar tu pago antes del día ${fechaLimite} (la suspensión aplicaría ${fechaSuspension}). Recuerda: estar al día antes de esa fecha te hace elegible para nuestro sorteo mensual del día 4 (mes gratis o artículos). No estamos obligados a realizar sorteos — lo hacemos para incentivar el pago a tiempo, ya que así cubrimos a tiempo nuestros compromisos con el servicio. Nuestro compromiso contigo es que el servicio contratado te siga llegando. ¡Gracias por tu preferencia!`;
+}
+
 const COLORS = {
   bg: "#10151A",
   panel: "#171D23",
@@ -264,13 +321,41 @@ export default function App() {
     ]);
     if (c.error || p.error || f.error) {
       setErrorMsg((c.error || p.error || f.error).message);
-    } else {
-      setClientes(c.data || []);
-      setPlanes(p.data || []);
-      setFacturas(f.data || []);
+      setLoading(false);
+      return;
     }
+    await generarFacturasDelCiclo(c.data || [], p.data || [], f.data || []);
+    const f2 = await supabase.from("facturas").select("*").order("fecha_vencimiento", { ascending: true });
+    setClientes(c.data || []);
+    setPlanes(p.data || []);
+    setFacturas(f2.data || f.data || []);
     setLoading(false);
   }, []);
+
+  // Revisa si a algún cliente ya le toca factura este ciclo y, si no existe todavía, la crea.
+  const generarFacturasDelCiclo = async (clientesData, planesData, facturasData) => {
+    const hoy = new Date();
+    const nuevas = [];
+    for (const cliente of clientesData) {
+      if (cliente.estado === "suspendido") continue;
+      const { generar, vencimiento, periodo } = cicloInfo(cliente.ciclo || 15, hoy);
+      if (!generar) continue;
+      const vencISO = fmtISO(vencimiento);
+      const yaExiste = facturasData.some((f) => f.cliente_id === cliente.id && f.fecha_vencimiento === vencISO);
+      if (yaExiste) continue;
+      const plan = planesData.find((p) => p.id === cliente.plan_id);
+      nuevas.push({
+        cliente_id: cliente.id,
+        periodo,
+        monto: plan ? plan.precio : 0,
+        estado: "pendiente",
+        fecha_vencimiento: vencISO,
+      });
+    }
+    if (nuevas.length > 0) {
+      await supabase.from("facturas").insert(nuevas);
+    }
+  };
 
   useEffect(() => {
     if (session) loadAll();
@@ -300,6 +385,7 @@ export default function App() {
       estado: form.estado,
       lat: form.lat || null,
       lng: form.lng || null,
+      ciclo: Number(form.ciclo) || 15,
     };
     const q = form.id
       ? supabase.from("clientes").update(payload).eq("id", form.id)
@@ -558,6 +644,7 @@ export default function App() {
                               estado: c.estado,
                               lat: c.lat,
                               lng: c.lng,
+                              ciclo: c.ciclo,
                             })
                           }
                           style={{ color: COLORS.dim }}
@@ -627,9 +714,8 @@ export default function App() {
               ) : (
                 facturas.slice().reverse().map((f) => {
                   const c = clientes.find((c) => c.id === f.cliente_id);
-                  const mensaje = c
-                    ? `Hola ${c.nombre}, te recordamos que tu factura de ${f.periodo || "tu servicio"} por ${money(f.monto)} ${f.fecha_vencimiento ? `vence el ${f.fecha_vencimiento}` : "está pendiente"}. ¡Gracias!`
-                    : "";
+                  const visual = estadoVisual(f, new Date());
+                  const mensaje = c ? mensajeRecordatorio(c, f) : "";
                   const link = c ? whatsappLink(c.telefono, mensaje) : null;
                   return (
                     <div
@@ -645,7 +731,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="font-mono text-sm">{money(f.monto)}</span>
-                        <FacturaBadge estado={f.estado} />
+                        <FacturaBadge estado={visual} />
                         {f.estado !== "pagada" && (
                           <Button variant="ghost" onClick={() => markPaid(f.id)}>
                             Marcar pagada
@@ -923,6 +1009,7 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
     estado: initial.estado || "activo",
     lat: initial.lat || null,
     lng: initial.lng || null,
+    ciclo: initial.ciclo || 15,
   });
   return (
     <Modal title={initial.id ? "Editar cliente" : "Nuevo cliente"} onClose={onCancel}>
@@ -934,6 +1021,12 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
       </Field>
       <Field label="Dirección">
         <input style={inputStyle} value={form.direccion} onChange={(e) => setForm({ ...form, direccion: e.target.value })} />
+      </Field>
+      <Field label="Ciclo de facturación">
+        <select style={inputStyle} value={form.ciclo} onChange={(e) => setForm({ ...form, ciclo: e.target.value })}>
+          <option value={15}>Corte día 15 (suspensión día 20)</option>
+          <option value={30}>Corte fin de mes (suspensión día 5)</option>
+        </select>
       </Field>
       <LocationPicker lat={form.lat} lng={form.lng} onChange={(lat, lng) => setForm({ ...form, lat, lng })} />
       <Field label="Plan">
