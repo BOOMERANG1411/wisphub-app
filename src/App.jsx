@@ -1700,8 +1700,9 @@ const CAMPOS_PAGOS = [
 
 const CAMPOS_UBICACION = [
   { key: "cliente", label: "Cliente (debe coincidir con el Nombre exacto)", requerido: true },
-  { key: "lat", label: "Latitud", requerido: true },
-  { key: "lng", label: "Longitud", requerido: true },
+  { key: "coordenadas", label: "Coordenadas combinadas (ej. 19.43,-70.75)" },
+  { key: "lat", label: "Latitud (si viene en columna aparte)" },
+  { key: "lng", label: "Longitud (si viene en columna aparte)" },
 ];
 
 function ImportUbicacionForm({ onCancel, onImport }) {
@@ -1766,18 +1767,25 @@ function ImportUbicacionForm({ onCancel, onImport }) {
   };
 
   const confirmar = async () => {
-    if (!mapping.cliente || !mapping.lat || !mapping.lng) {
-      setError("Debes indicar cliente, latitud y longitud.");
+    if (!mapping.cliente || (!mapping.coordenadas && (!mapping.lat || !mapping.lng))) {
+      setError("Debes indicar el cliente, y las coordenadas (combinadas o lat/lng por separado).");
       return;
     }
     setImportando(true);
     setError("");
     try {
-      const filas = rows.map((r) => ({
-        cliente: mapping.cliente ? String(r[mapping.cliente] ?? "").trim() : "",
-        lat: mapping.lat ? String(r[mapping.lat] ?? "").trim() : "",
-        lng: mapping.lng ? String(r[mapping.lng] ?? "").trim() : "",
-      })).filter((f) => f.cliente && f.lat && f.lng);
+      const filas = rows.map((r) => {
+        let lat = "", lng = "";
+        if (mapping.coordenadas) {
+          const combo = String(r[mapping.coordenadas] ?? "").trim();
+          const partes = combo.split(",").map((p) => p.trim());
+          if (partes.length === 2) { lat = partes[0]; lng = partes[1]; }
+        } else {
+          lat = mapping.lat ? String(r[mapping.lat] ?? "").trim() : "";
+          lng = mapping.lng ? String(r[mapping.lng] ?? "").trim() : "";
+        }
+        return { cliente: mapping.cliente ? String(r[mapping.cliente] ?? "").trim() : "", lat, lng };
+      }).filter((f) => f.cliente && f.lat && f.lng);
       await onImport(filas);
     } catch (err) {
       setError("Ocurrió un error: " + (err.message || ""));
