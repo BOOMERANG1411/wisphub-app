@@ -27,6 +27,8 @@ import {
   Wallet,
   TrendingDown,
   TrendingUp,
+  Download,
+  Printer,
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -718,7 +720,7 @@ export default function App() {
       style={{ backgroundColor: COLORS.bg, color: COLORS.text }}
     >
       <nav
-        className="md:w-56 w-full flex md:flex-col justify-between md:justify-start order-2 md:order-1 md:h-screen md:sticky md:top-0 px-3 py-3 md:py-5"
+        className="md:w-56 w-full flex md:flex-col justify-between md:justify-start order-2 md:order-1 md:h-screen md:sticky md:top-0 px-3 py-3 md:py-5 no-print"
         style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, borderRight: `1px solid ${COLORS.border}` }}
       >
         <div className="hidden md:flex items-center gap-2 px-2 mb-6">
@@ -1234,6 +1236,66 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
 function ReportesTab({ clientes, planes, facturas, movimientos }) {
   const hoy = new Date();
 
+  const exportarExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    const resumenData = [
+      { Concepto: "Total facturado", Monto: facturas.reduce((s, f) => s + Number(f.monto || 0), 0) },
+      { Concepto: "Cobrado", Monto: facturas.filter((f) => f.estado === "pagada").reduce((s, f) => s + Number(f.monto || 0), 0) },
+      { Concepto: "Pendiente", Monto: facturas.filter((f) => f.estado === "pendiente").reduce((s, f) => s + Number(f.monto || 0), 0) },
+      {},
+      { Concepto: "Forma de pago", "Pagos Internet": "Otros Ingresos", Gastos: "Total" },
+      ...FORMAS_PAGO.map((fp) => {
+        const pagosInternet = facturas.filter((f) => f.estado === "pagada" && f.forma_pago === fp.value).reduce((s, f) => s + Number(f.monto || 0), 0);
+        const otrosIngresos = movimientos.filter((m) => m.tipo === "otro_ingreso" && m.forma_pago === fp.value).reduce((s, m) => s + Number(m.monto || 0), 0);
+        const gastos = movimientos.filter((m) => m.tipo === "gasto" && m.forma_pago === fp.value).reduce((s, m) => s + Number(m.monto || 0), 0);
+        return { Concepto: fp.label, "Pagos Internet": pagosInternet, "Otros Ingresos": otrosIngresos, Gastos: gastos, Total: pagosInternet + otrosIngresos - gastos };
+      }),
+    ];
+    const wsResumen = XLSX.utils.json_to_sheet(resumenData, { skipHeader: true });
+    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen");
+
+    const facturasData = facturas.map((f) => {
+      const c = clientes.find((cl) => cl.id === f.cliente_id);
+      return {
+        Cliente: c ? c.nombre : "Cliente eliminado",
+        Periodo: f.periodo,
+        Monto: f.monto,
+        Estado: f.estado,
+        "Forma de pago": f.forma_pago || "",
+        "Fecha vencimiento": f.fecha_vencimiento || "",
+      };
+    });
+    const wsFacturas = XLSX.utils.json_to_sheet(facturasData);
+    XLSX.utils.book_append_sheet(wb, wsFacturas, "Facturas");
+
+    const clientesData = clientes.map((c) => {
+      const plan = planes.find((p) => p.id === c.plan_id);
+      return {
+        Nombre: c.nombre,
+        Telefono: c.telefono || "",
+        Direccion: c.direccion || "",
+        Estado: c.estado,
+        Plan: plan ? plan.nombre : "",
+        Ciclo: c.ciclo === 30 ? "Fin de mes" : "Día 15",
+      };
+    });
+    const wsClientes = XLSX.utils.json_to_sheet(clientesData);
+    XLSX.utils.book_append_sheet(wb, wsClientes, "Clientes");
+
+    const movimientosData = movimientos.map((m) => ({
+      Fecha: m.fecha,
+      Tipo: m.tipo === "gasto" ? "Gasto" : "Otro ingreso",
+      Descripcion: m.descripcion,
+      Monto: m.monto,
+      "Forma de pago": m.forma_pago,
+    }));
+    const wsMovimientos = XLSX.utils.json_to_sheet(movimientosData);
+    XLSX.utils.book_append_sheet(wb, wsMovimientos, "Caja");
+
+    XLSX.writeFile(wb, `Reporte-ISP-Control-${fmtISO(hoy)}.xlsx`);
+  };
+
   // Ingresos cobrados por mes (últimos 6 meses, según fecha_vencimiento)
   const meses = [];
   for (let i = 5; i >= 0; i--) {
@@ -1277,7 +1339,13 @@ function ReportesTab({ clientes, planes, facturas, movimientos }) {
 
   return (
     <div>
-      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Reportes</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="font-display text-xl md:text-2xl font-semibold">Reportes</h1>
+        <div className="flex gap-2 no-print">
+          <Button variant="ghost" onClick={exportarExcel}><Download size={16} /> Excel</Button>
+          <Button variant="ghost" onClick={() => window.print()}><Printer size={16} /> PDF</Button>
+        </div>
+      </div>
       <p className="text-sm mb-6" style={{ color: COLORS.dim }}>Visión financiera de tu operación.</p>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
