@@ -26,6 +26,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import {
   BarChart,
   Bar,
@@ -699,7 +700,7 @@ export default function App() {
               </div>
               <div className="flex gap-2">
                 <Button variant="ghost" onClick={() => setImportModal(true)}>
-                  <Upload size={16} /> Importar CSV
+                  <Upload size={16} /> Importar Excel/CSV
                 </Button>
                 <Button onClick={() => setClientModal({})}>
                   <Plus size={16} /> Nuevo cliente
@@ -1236,7 +1237,25 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     if (!file) return;
     setFileName(file.name);
     setError("");
-    intentarParseo(file, [",", "\t", ";"]);
+    const esExcel = /\.(xlsx|xls)$/i.test(file.name);
+    if (esExcel) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const wb = XLSX.read(evt.target.result, { type: "array" });
+          const hoja = wb.Sheets[wb.SheetNames[0]];
+          const data = XLSX.utils.sheet_to_json(hoja, { defval: "" });
+          const primeraFila = XLSX.utils.sheet_to_json(hoja, { header: 1 })[0] || [];
+          const cols = primeraFila.map(String).filter((h) => h && h.trim() !== "");
+          procesarResultados({ meta: { fields: cols }, data });
+        } catch (err) {
+          setError("No se pudo leer el archivo de Excel. Verifica que no esté dañado.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      intentarParseo(file, [",", "\t", ";"]);
+    }
   };
 
   const confirmar = async () => {
@@ -1271,13 +1290,13 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
   };
 
   return (
-    <Modal title="Importar clientes desde CSV" onClose={onCancel}>
+    <Modal title="Importar clientes desde Excel o CSV" onClose={onCancel}>
       {headers.length === 0 ? (
         <div>
           <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
-            Exporta tus clientes desde WispHub (u otro sistema) como archivo CSV, y súbelo aquí.
+            Exporta tus clientes desde WispHub (u otro sistema) como Excel (.xlsx) o CSV, y súbelo aquí.
           </p>
-          <input type="file" accept=".csv" onChange={handleFile} style={{ color: COLORS.text, fontSize: 13 }} />
+          <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} style={{ color: COLORS.text, fontSize: 13 }} />
           {error && <p className="text-xs mt-3" style={{ color: COLORS.danger }}>{error}</p>}
         </div>
       ) : (
