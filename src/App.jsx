@@ -331,6 +331,7 @@ export default function App() {
   const [importFacturasModal, setImportFacturasModal] = useState(false);
   const [importPagosModal, setImportPagosModal] = useState(false);
   const [importUbicacionModal, setImportUbicacionModal] = useState(false);
+  const [importTelefonosModal, setImportTelefonosModal] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -534,6 +535,22 @@ export default function App() {
     setImportUbicacionModal(false);
     loadAll();
     setErrorMsg(`Ubicaciones actualizadas: ${actualizados} · Sin cliente coincidente: ${sinCliente} · Sin coordenadas válidas: ${sinCoordenadas}`);
+  };
+
+  const importarTelefonos = async (filas) => {
+    let actualizados = 0, sinCliente = 0;
+    const tareas = [];
+    for (const f of filas) {
+      const cliente = clientes.find((c) => c.nombre.toLowerCase().trim() === f.cliente.toLowerCase().trim());
+      if (!cliente) { sinCliente++; continue; }
+      tareas.push(
+        supabase.from("clientes").update({ telefono: f.telefono }).eq("id", cliente.id).then(() => { actualizados++; })
+      );
+    }
+    await Promise.allSettled(tareas);
+    setImportTelefonosModal(false);
+    loadAll();
+    setErrorMsg(`Teléfonos sincronizados: ${actualizados} · Sin cliente coincidente: ${sinCliente}`);
   };
 
   if (session === undefined) {
@@ -810,6 +827,9 @@ export default function App() {
                 <Button variant="ghost" onClick={() => setImportModal(true)}>
                   <Upload size={16} /> Importar Excel/CSV
                 </Button>
+                <Button variant="ghost" onClick={() => setImportTelefonosModal(true)}>
+                  <Upload size={16} /> Sincronizar teléfonos
+                </Button>
                 <Button onClick={() => setClientModal({})}>
                   <Plus size={16} /> Nuevo cliente
                 </Button>
@@ -1076,6 +1096,12 @@ export default function App() {
         <ImportUbicacionForm
           onCancel={() => setImportUbicacionModal(false)}
           onImport={importarUbicaciones}
+        />
+      )}
+      {importTelefonosModal && (
+        <ImportTelefonosForm
+          onCancel={() => setImportTelefonosModal(false)}
+          onImport={importarTelefonos}
         />
       )}
     </div>
@@ -1707,6 +1733,130 @@ const CAMPOS_UBICACION = [
   { key: "lat", label: "Latitud (si viene en columna aparte)" },
   { key: "lng", label: "Longitud (si viene en columna aparte)" },
 ];
+
+const CAMPOS_TELEFONOS = [
+  { key: "cliente", label: "Cliente (debe coincidir con el Nombre exacto)", requerido: true },
+  { key: "telefono", label: "Teléfono", requerido: true },
+];
+
+function ImportTelefonosForm({ onCancel, onImport }) {
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [mapping, setMapping] = useState({});
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [importando, setImportando] = useState(false);
+
+  const procesarResultados = (results) => {
+    const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+    setHeaders(cols);
+    setRows(results.data);
+    const auto = {};
+    CAMPOS_TELEFONOS.forEach((c) => {
+      const match = cols.find((h) => h.toLowerCase().includes(c.key));
+      if (match) auto[c.key] = match;
+    });
+    setMapping(auto);
+  };
+
+  const intentarParseo = (file, delimitadores) => {
+    const [actual, ...resto] = delimitadores;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      delimiter: actual,
+      complete: (results) => {
+        const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+        if (cols.length <= 1 && resto.length > 0) intentarParseo(file, resto);
+        else procesarResultados(results);
+      },
+      error: () => setError("No se pudo leer el archivo."),
+    });
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    const esExcel = /\.(xlsx|xls)$/i.test(file.name);
+    if (esExcel) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const wb = XLSX.read(evt.target.result, { type: "array" });
+          const hoja = wb.Sheets[wb.SheetNames[0]];
+          const data = XLSX.utils.sheet_to_json(hoja, { defval: "" });
+          const primeraFila = XLSX.utils.sheet_to_json(hoja, { header: 1 })[0] || [];
+          const cols = primeraFila.map(String).filter((h) => h && h.trim() !== "");
+          procesarResultados({ meta: { fields: cols }, data });
+        } catch (err) {
+          setError("No se pudo leer el archivo de Excel.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      intentarParseo(file, [",", "\t", ";"]);
+    }
+  };
+
+  const confirmar = async () => {
+    if (!mapping.cliente || !mapping.telefono) {
+      setError("Debes indicar el cliente y el teléfono.");
+      return;
+    }
+    setImportando(true);
+    setError("");
+    try {
+      const filas = rows.map((r) => ({
+        cliente: mapping.cliente ? String(r[mapping.cliente] ?? "").trim() : "",
+        telefono: mapping.telefono ? String(r[mapping.telefono] ?? "").trim() : "",
+      })).filter((f) => f.cliente && f.telefono);
+      await onImport(filas);
+    } catch (err) {
+      setError("Ocurrió un error: " + (err.message || ""));
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  return (
+    <Modal title="Sincronizar teléfonos" onClose={onCancel}>
+      {headers.length === 0 ? (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+            Sube el archivo de facturas o pagos de WispHub (trae teléfonos), y aquí actualizamos solo ese dato para cada cliente que ya tienes.
+          </p>
+          <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} style={{ color: COLORS.text, fontSize: 13 }} />
+          {error && <p className="text-xs mt-3" style={{ color: COLORS.danger }}>{error}</p>}
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>{fileName} · {rows.length} filas detectadas.</p>
+          <div className="max-h-72 overflow-y-auto pr-1">
+            {CAMPOS_TELEFONOS.map((c) => (
+              <Field key={c.key} label={c.label + (c.requerido ? " *" : "")}>
+                <select style={inputStyle} value={mapping[c.key] || ""} onChange={(e) => setMapping({ ...mapping, [c.key]: e.target.value })}>
+                  <option value="">No usar</option>
+                  {headers.map((h) => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+          </div>
+          {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+            <Button onClick={confirmar} disabled={importando}>
+              {importando ? "Sincronizando…" : `Sincronizar ${rows.length} filas`}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 function ImportUbicacionForm({ onCancel, onImport }) {
   const [headers, setHeaders] = useState([]);
