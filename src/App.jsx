@@ -29,6 +29,8 @@ import {
   TrendingUp,
   Download,
   Printer,
+  Receipt,
+  DollarSign,
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -315,6 +317,7 @@ function LoginScreen({ onLogin }) {
 
 export default function App() {
   const [session, setSession] = useState(undefined);
+  const [perfil, setPerfil] = useState(null);
   const [clientes, setClientes] = useState([]);
   const [planes, setPlanes] = useState([]);
   const [facturas, setFacturas] = useState([]);
@@ -338,6 +341,7 @@ export default function App() {
   const [importUbicacionModal, setImportUbicacionModal] = useState(false);
   const [importTelefonosModal, setImportTelefonosModal] = useState(false);
   const [importHistorialModal, setImportHistorialModal] = useState(false);
+  const [reciboModal, setReciboModal] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -422,8 +426,27 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (session) loadAll();
+    if (session) {
+      loadAll();
+      supabase
+        .from("perfiles")
+        .select("*")
+        .eq("user_id", session.user.id)
+        .maybeSingle()
+        .then(async ({ data }) => {
+          if (data) {
+            setPerfil(data);
+          } else {
+            const nuevo = { user_id: session.user.id, nombre: session.user.email, rol: "cajero", comision_tipo: "porcentaje", comision_valor: 0 };
+            await supabase.from("perfiles").insert(nuevo);
+            setPerfil(nuevo);
+          }
+        });
+    }
   }, [session, loadAll]);
+
+  const esCajero = perfil?.rol === "cajero";
+  const miUserId = session?.user?.id;
 
   const ensurePlanes = async (unicos) => {
     const faltantes = unicos.filter(
@@ -549,6 +572,49 @@ export default function App() {
     setImportPagosModal(false);
     loadAll();
     setErrorMsg(`Reconciliación completa. Marcadas como pagadas: ${actualizadas} · Sin cliente coincidente: ${sinCliente} · Sin factura pendiente que actualizar: ${sinFactura}`);
+  };
+
+  const [puntosDePago, setPuntosDePago] = useState([]);
+  const [liquidaciones, setLiquidaciones] = useState([]);
+
+  const cargarPuntosDePago = useCallback(async () => {
+    const [{ data: perfilesData }, { data: liqData }] = await Promise.all([
+      supabase.from("perfiles").select("*").order("nombre"),
+      supabase.from("liquidaciones").select("*").order("fecha", { ascending: false }),
+    ]);
+    setPuntosDePago(perfilesData || []);
+    setLiquidaciones(liqData || []);
+  }, []);
+
+  useEffect(() => {
+    if (session && perfil && perfil.rol !== "cajero") cargarPuntosDePago();
+  }, [session, perfil, cargarPuntosDePago]);
+
+  const guardarComision = async (userId, tipo, valor, nombre) => {
+    const { error } = await supabase.from("perfiles").upsert({ user_id: userId, comision_tipo: tipo, comision_valor: valor, nombre, rol: "cajero" });
+    if (error) setErrorMsg(error.message);
+    else cargarPuntosDePago();
+  };
+
+  const liquidarCajero = async (cajero) => {
+    const pendientes = facturas.filter((f) => f.cobrado_por === cajero.user_id && f.estado === "pagada" && !f.liquidado);
+    if (pendientes.length === 0) return;
+    const montoTotal = pendientes.reduce((s, f) => s + Number(f.monto || 0), 0);
+    const comision =
+      cajero.comision_tipo === "fijo"
+        ? pendientes.length * Number(cajero.comision_valor || 0)
+        : montoTotal * (Number(cajero.comision_valor || 0) / 100);
+    await supabase.from("liquidaciones").insert({
+      user_id: cajero.user_id,
+      nombre_cajero: cajero.nombre,
+      cantidad_facturas: pendientes.length,
+      monto_total: montoTotal,
+      comision,
+    });
+    const ids = pendientes.map((f) => f.id);
+    await supabase.from("facturas").update({ liquidado: true }).in("id", ids);
+    await loadAll();
+    await cargarPuntosDePago();
   };
 
   const importarUbicaciones = async (filas) => {
@@ -719,7 +785,11 @@ export default function App() {
     }
   };
   const markPaid = async (id, formaPago) => {
-    const { error } = await supabase.from("facturas").update({ estado: "pagada", forma_pago: formaPago }).eq("id", id);
+    const { data: userData } = await supabase.auth.getUser();
+    const { error } = await supabase
+      .from("facturas")
+      .update({ estado: "pagada", forma_pago: formaPago, cobrado_por: userData?.user?.id || null })
+      .eq("id", id);
     if (error) setErrorMsg(error.message);
     else {
       setPagoModal(null);
@@ -781,7 +851,7 @@ export default function App() {
     .filter((f) => f.estado !== "pagada")
     .reduce((sum, f) => sum + Number(f.monto || 0), 0);
 
-  const NAV = [
+  const NAV_COMPLETO = [
     { id: "dashboard", label: "Panel", Icon: LayoutDashboard },
     { id: "clientes", label: "Clientes", Icon: Users },
     { id: "planes", label: "Planes", Icon: Wifi },
@@ -789,7 +859,11 @@ export default function App() {
     { id: "reportes", label: "Reportes", Icon: BarChart3 },
     { id: "mapa", label: "Mapa", Icon: MapPin },
     { id: "caja", label: "Caja", Icon: Wallet },
+    { id: "puntos-pago", label: "Puntos de pago", Icon: DollarSign },
   ];
+  const NAV = esCajero
+    ? NAV_COMPLETO.filter((n) => ["dashboard", "clientes", "facturacion"].includes(n.id))
+    : NAV_COMPLETO;
 
   return (
     <div
@@ -904,15 +978,19 @@ export default function App() {
                 <p className="text-sm" style={{ color: COLORS.dim }}>{clientes.length} registrados</p>
               </div>
               <div className="flex gap-2">
-                <Button variant="ghost" onClick={() => setImportModal(true)}>
-                  <Upload size={16} /> Importar Excel/CSV
-                </Button>
-                <Button variant="ghost" onClick={() => setImportTelefonosModal(true)}>
-                  <Upload size={16} /> Sincronizar teléfonos
-                </Button>
-                <Button onClick={() => setClientModal({})}>
-                  <Plus size={16} /> Nuevo cliente
-                </Button>
+                {!esCajero && (
+                  <>
+                    <Button variant="ghost" onClick={() => setImportModal(true)}>
+                      <Upload size={16} /> Importar Excel/CSV
+                    </Button>
+                    <Button variant="ghost" onClick={() => setImportTelefonosModal(true)}>
+                      <Upload size={16} /> Sincronizar teléfonos
+                    </Button>
+                    <Button onClick={() => setClientModal({})}>
+                      <Plus size={16} /> Nuevo cliente
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -959,33 +1037,37 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <EstadoBadge estado={c.estado} />
                         <CicloBadge ciclo={c.ciclo} />
-                        <button
-                          onClick={() =>
-                            setClientModal({
-                              id: c.id,
-                              nombre: c.nombre,
-                              telefono: c.telefono,
-                              direccion: c.direccion,
-                              planId: c.plan_id,
-                              estado: c.estado,
-                              lat: c.lat,
-                              lng: c.lng,
-                              ciclo: c.ciclo,
-                              pppoe_usuario: c.pppoe_usuario,
-                              pppoe_secret: c.pppoe_secret,
-                              ip_asignada: c.ip_asignada,
-                              equipo: c.equipo,
-                              cedula: c.cedula,
-                              fecha_instalacion: c.fecha_instalacion,
-                            })
-                          }
-                          style={{ color: COLORS.dim }}
-                        >
-                          <Pencil size={15} />
-                        </button>
-                        <button onClick={() => deleteClient(c.id)} style={{ color: COLORS.dim }}>
-                          <Trash2 size={15} />
-                        </button>
+                        {!esCajero && (
+                          <>
+                            <button
+                              onClick={() =>
+                                setClientModal({
+                                  id: c.id,
+                                  nombre: c.nombre,
+                                  telefono: c.telefono,
+                                  direccion: c.direccion,
+                                  planId: c.plan_id,
+                                  estado: c.estado,
+                                  lat: c.lat,
+                                  lng: c.lng,
+                                  ciclo: c.ciclo,
+                                  pppoe_usuario: c.pppoe_usuario,
+                                  pppoe_secret: c.pppoe_secret,
+                                  ip_asignada: c.ip_asignada,
+                                  equipo: c.equipo,
+                                  cedula: c.cedula,
+                                  fecha_instalacion: c.fecha_instalacion,
+                                })
+                              }
+                              style={{ color: COLORS.dim }}
+                            >
+                              <Pencil size={15} />
+                            </button>
+                            <button onClick={() => deleteClient(c.id)} style={{ color: COLORS.dim }}>
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   );
@@ -1035,18 +1117,22 @@ export default function App() {
             <div className="flex items-center justify-between mb-5">
               <h1 className="font-display text-xl md:text-2xl font-semibold">Facturación</h1>
               <div className="flex gap-2">
-                <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
-                  <Upload size={16} /> Importar historial
-                </Button>
-                <Button variant="ghost" onClick={() => setImportPagosModal(true)}>
-                  <Wallet size={16} /> Reconciliar pagos
-                </Button>
-                <Button variant="ghost" onClick={() => setImportHistorialModal(true)}>
-                  <Download size={16} /> Historial de ingresos
-                </Button>
-                <Button onClick={() => setInvoiceModal({})}>
-                  <Plus size={16} /> Nueva factura
-                </Button>
+                {!esCajero && (
+                  <>
+                    <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
+                      <Upload size={16} /> Importar historial
+                    </Button>
+                    <Button variant="ghost" onClick={() => setImportPagosModal(true)}>
+                      <Wallet size={16} /> Reconciliar pagos
+                    </Button>
+                    <Button variant="ghost" onClick={() => setImportHistorialModal(true)}>
+                      <Download size={16} /> Historial de ingresos
+                    </Button>
+                    <Button onClick={() => setInvoiceModal({})}>
+                      <Plus size={16} /> Nueva factura
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
             {facturaFiltro !== "todas" && (
@@ -1072,6 +1158,7 @@ export default function App() {
                 const facturasFiltradas = facturas
                   .slice()
                   .reverse()
+                  .filter((f) => (esCajero ? f.estado !== "pagada" || f.cobrado_por === miUserId : true))
                   .filter((f) => {
                     if (facturaFiltro === "todas") return true;
                     const visual = estadoVisual(f, new Date());
@@ -1111,7 +1198,7 @@ export default function App() {
                             Marcar pagada
                           </Button>
                         )}
-                        {f.estado !== "pagada" && (
+                        {f.estado !== "pagada" && !esCajero && (
                           <button
                             onClick={() => setProrrogaModal(f)}
                             className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
@@ -1131,9 +1218,18 @@ export default function App() {
                             <MessageCircle size={13} /> Recordar
                           </a>
                         )}
-                        <button onClick={() => deleteInvoice(f.id)} style={{ color: COLORS.dim }}>
-                          <Trash2 size={15} />
+                        <button
+                          onClick={() => setReciboModal(f)}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                          style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
+                        >
+                          <Receipt size={13} /> Recibo
                         </button>
+                        {!esCajero && (
+                          <button onClick={() => deleteInvoice(f.id)} style={{ color: COLORS.dim }}>
+                            <Trash2 size={15} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1164,6 +1260,16 @@ export default function App() {
             onNuevo={() => setMovimientoModal({})}
             onEditar={(m) => setMovimientoModal(m)}
             onEliminar={deleteMovimiento}
+          />
+        )}
+        {tab === "puntos-pago" && !esCajero && (
+          <PuntosDePagoTab
+            puntosDePago={puntosDePago}
+            liquidaciones={liquidaciones}
+            facturas={facturas}
+            onCargar={cargarPuntosDePago}
+            onGuardarComision={guardarComision}
+            onLiquidar={liquidarCajero}
           />
         )}
       </main>
@@ -1247,6 +1353,13 @@ export default function App() {
           onImport={importarHistorialIngresos}
         />
       )}
+      {reciboModal && (
+        <ReciboModal
+          factura={reciboModal}
+          cliente={clientes.find((c) => c.id === reciboModal.cliente_id)}
+          onClose={() => setReciboModal(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1256,6 +1369,74 @@ const FORMAS_PAGO = [
   { value: "transferencia", label: "Transferencia Bancaria" },
   { value: "saldo_favor", label: "Saldo a Favor" },
 ];
+
+function ReciboModal({ factura, cliente, onClose }) {
+  const [formato, setFormato] = useState("termica"); // "termica" o "carta"
+  const fecha = new Date();
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl p-5"
+        style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, maxHeight: "90vh", overflowY: "auto" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4 no-print">
+          <h3 className="text-base font-semibold" style={{ color: COLORS.text }}>Recibo de pago</h3>
+          <button onClick={onClose} style={{ color: COLORS.dim }}><X size={18} /></button>
+        </div>
+
+        <div className="flex gap-2 mb-4 no-print">
+          <button
+            onClick={() => setFormato("termica")}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{ backgroundColor: formato === "termica" ? COLORS.accent : COLORS.panel2, color: formato === "termica" ? "#fff" : COLORS.text, border: `1px solid ${COLORS.border}` }}
+          >
+            Ticket térmico
+          </button>
+          <button
+            onClick={() => setFormato("carta")}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{ backgroundColor: formato === "carta" ? COLORS.accent : COLORS.panel2, color: formato === "carta" ? "#fff" : COLORS.text, border: `1px solid ${COLORS.border}` }}
+          >
+            Hoja / PDF
+          </button>
+        </div>
+
+        <div
+          id="recibo-imprimible"
+          className={formato === "termica" ? "recibo-termica" : "recibo-carta"}
+          style={{ backgroundColor: "#fff", color: "#000", padding: formato === "termica" ? "10px" : "24px", borderRadius: 8 }}
+        >
+          <div style={{ textAlign: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 15 : 20 }}>ISP-Control</div>
+            <div style={{ fontSize: formato === "termica" ? 10 : 12, color: "#555" }}>Recibo de pago</div>
+          </div>
+          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 11 : 13 }}>
+            <div><strong>Cliente:</strong> {cliente?.nombre || "—"}</div>
+            {cliente?.telefono && <div><strong>Teléfono:</strong> {cliente.telefono}</div>}
+            <div><strong>Periodo:</strong> {factura.periodo}</div>
+            <div><strong>Vence:</strong> {factura.fecha_vencimiento || "—"}</div>
+            <div><strong>Forma de pago:</strong> {FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—"}</div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 14 : 18, fontWeight: 700, margin: "8px 0" }}>
+            <span>TOTAL</span>
+            <span>{money(factura.monto)}</span>
+          </div>
+          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 10 }}>
+            {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}
+            <br />¡Gracias por su pago!
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-4 no-print">
+          <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+          <Button onClick={() => window.print()}><Printer size={16} /> Imprimir / Guardar PDF</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PagoForm({ factura, onCancel, onSave }) {
   const [formaPago, setFormaPago] = useState("efectivo");
@@ -1423,6 +1604,123 @@ function HistorialMensualTabla({ historialMensual, onGuardar, onEliminar }) {
           onChange={(e) => setNuevoMes(e.target.value)}
         />
         <Button variant="ghost" onClick={agregarMes}><Plus size={14} /> Agregar mes</Button>
+      </div>
+    </div>
+  );
+}
+
+function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComision, onLiquidar }) {
+  const [editando, setEditando] = useState({});
+
+  const cajeros = puntosDePago.filter((p) => p.rol === "cajero");
+
+  const datosDe = (cajero) => {
+    const pendientes = facturas.filter((f) => f.cobrado_por === cajero.user_id && f.estado === "pagada" && !f.liquidado);
+    const monto = pendientes.reduce((s, f) => s + Number(f.monto || 0), 0);
+    const comision =
+      cajero.comision_tipo === "fijo"
+        ? pendientes.length * Number(cajero.comision_valor || 0)
+        : monto * (Number(cajero.comision_valor || 0) / 100);
+    return { cantidad: pendientes.length, monto, comision };
+  };
+
+  const iniciarEdicion = (c) => setEditando({ user_id: c.user_id, comision_tipo: c.comision_tipo || "porcentaje", comision_valor: c.comision_valor || 0, nombre: c.nombre || "" });
+  const guardarEdicion = () => {
+    onGuardarComision(editando.user_id, editando.comision_tipo, parseFloat(editando.comision_valor) || 0, editando.nombre);
+    setEditando({});
+  };
+
+  return (
+    <div>
+      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Puntos de pago</h1>
+      <p className="text-sm mb-6" style={{ color: COLORS.dim }}>
+        Cada cajero se crea en Supabase (Authentication → Users) y aparece aquí automáticamente cuando entra por primera vez.
+      </p>
+
+      {cajeros.length === 0 ? (
+        <div className="rounded-xl p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+          Todavía no hay cajeros registrados. Crea un usuario en Supabase y pídele que inicie sesión una vez.
+        </div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-3 mb-8">
+          {cajeros.map((c) => {
+            const { cantidad, monto, comision } = datosDe(c);
+            const enEdicion = editando.user_id === c.user_id;
+            return (
+              <div key={c.user_id} className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+                {enEdicion ? (
+                  <div className="mb-3">
+                    <Field label="Nombre">
+                      <input style={inputStyle} value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} />
+                    </Field>
+                    <Field label="Tipo de comisión">
+                      <select style={inputStyle} value={editando.comision_tipo} onChange={(e) => setEditando({ ...editando, comision_tipo: e.target.value })}>
+                        <option value="porcentaje">Porcentaje de lo cobrado</option>
+                        <option value="fijo">Monto fijo por factura</option>
+                      </select>
+                    </Field>
+                    <Field label={editando.comision_tipo === "fijo" ? "Monto por factura" : "Porcentaje (%)"}>
+                      <input type="number" style={inputStyle} value={editando.comision_valor} onChange={(e) => setEditando({ ...editando, comision_valor: e.target.value })} />
+                    </Field>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="ghost" onClick={() => setEditando({})}>Cancelar</Button>
+                      <Button onClick={guardarEdicion}>Guardar</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <div className="text-sm font-medium">{c.nombre || "Sin nombre"}</div>
+                        <div className="text-xs" style={{ color: COLORS.dim }}>
+                          {c.comision_tipo === "fijo" ? `${money(c.comision_valor)} por factura` : `${c.comision_valor || 0}% de lo cobrado`}
+                        </div>
+                      </div>
+                      <button onClick={() => iniciarEdicion(c)} style={{ color: COLORS.dim }}><Pencil size={15} /></button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-3 font-mono text-sm">
+                      <div>
+                        <div className="text-xs font-sans" style={{ color: COLORS.dim }}>Facturas</div>
+                        {cantidad}
+                      </div>
+                      <div>
+                        <div className="text-xs font-sans" style={{ color: COLORS.dim }}>Recaudado</div>
+                        {money(monto)}
+                      </div>
+                      <div>
+                        <div className="text-xs font-sans" style={{ color: COLORS.dim }}>Comisión</div>
+                        <span style={{ color: COLORS.active }}>{money(comision)}</span>
+                      </div>
+                    </div>
+                    <Button variant="ghost" onClick={() => onLiquidar(c)} disabled={cantidad === 0}>
+                      <DollarSign size={14} /> Recaudar y poner en cero
+                    </Button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>HISTORIAL DE LIQUIDACIONES</h2>
+      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+        {liquidaciones.length === 0 ? (
+          <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>Sin liquidaciones todavía.</div>
+        ) : (
+          liquidaciones.map((l) => (
+            <div key={l.id} className="flex items-center justify-between px-4 py-3 text-sm" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+              <div>
+                <div className="font-medium">{l.nombre_cajero || "Cajero"}</div>
+                <div className="text-xs" style={{ color: COLORS.dim }}>{l.fecha} · {l.cantidad_facturas} facturas</div>
+              </div>
+              <div className="text-right font-mono">
+                <div>{money(l.monto_total)}</div>
+                <div className="text-xs" style={{ color: COLORS.active }}>Comisión: {money(l.comision)}</div>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
