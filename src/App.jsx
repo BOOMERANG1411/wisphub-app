@@ -60,6 +60,19 @@ const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto"
 const fmtISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const ultimoDiaMes = (year, month) => new Date(year, month + 1, 0).getDate();
 
+// Convierte "28/07/2026 11:15" o "28/07/2026" a "2026-07-28". Si no coincide el patrón, lo deja igual.
+function parseFechaFlexible(str) {
+  if (!str) return null;
+  const soloFecha = str.trim().split(" ")[0];
+  const m = soloFecha.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const [, d, mo, y] = m;
+    return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(soloFecha)) return soloFecha;
+  return null;
+}
+
 // Para el ciclo del cliente y la fecha de hoy, calcula si ya toca generar factura
 // y cuáles son sus fechas clave (vencimiento y suspensión).
 function cicloInfo(ciclo, hoy) {
@@ -142,7 +155,8 @@ function EstadoBadge({ estado }) {
   const map = {
     activo: { color: COLORS.active, label: "Activo", Icon: SignalHigh },
     moroso: { color: COLORS.danger, label: "Moroso", Icon: SignalLow },
-    suspendido: { color: COLORS.dim, label: "Suspendido", Icon: SignalMedium },
+    suspendido: { color: COLORS.warn, label: "Suspendido", Icon: SignalMedium },
+    cancelado: { color: COLORS.dim, label: "Cancelado", Icon: SignalLow },
   };
   const { color, label, Icon } = map[estado] || map.activo;
   return (
@@ -364,7 +378,7 @@ export default function App() {
     const hoy = new Date();
     const nuevas = [];
     for (const cliente of clientesData) {
-      if (cliente.estado === "suspendido") continue;
+      if (cliente.estado === "suspendido" || cliente.estado === "cancelado") continue;
       const { generar, vencimiento, periodo } = cicloInfo(cliente.ciclo || 15, hoy);
       if (!generar) continue;
       const vencISO = fmtISO(vencimiento);
@@ -388,23 +402,42 @@ export default function App() {
     if (session) loadAll();
   }, [session, loadAll]);
 
-  const importarClientes = async (filas) => {
-    const estadosValidos = ["activo", "moroso", "suspendido"];
+  const ensurePlanes = async (unicos) => {
+    const faltantes = unicos.filter(
+      (u) => u.nombre && !planes.some((p) => p.nombre.toLowerCase().trim() === u.nombre.toLowerCase().trim())
+    );
+    if (faltantes.length > 0) {
+      await supabase.from("planes").insert(
+        faltantes.map((u) => ({ nombre: u.nombre, velocidad: "", precio: u.precio || 0 }))
+      );
+    }
+    const { data } = await supabase.from("planes").select("*").order("precio");
+    setPlanes(data || []);
+    return data || [];
+  };
+
+  const importarClientes = async (filas, planesActualizados) => {
+    const estadosValidos = ["activo", "moroso", "suspendido", "cancelado"];
     const payload = filas.map((f) => {
       const estadoNorm = (f.estado || "").toLowerCase().trim();
+      const cicloTexto = String(f.ciclo || "");
+      const cicloNum = cicloTexto.includes("30") ? 30 : cicloTexto.includes("15") ? 15 : 15;
+      const planEncontrado = f.plan
+        ? planesActualizados.find((p) => p.nombre.toLowerCase().trim() === f.plan.toLowerCase().trim())
+        : null;
       return {
         nombre: f.nombre,
         telefono: f.telefono || null,
         direccion: f.direccion || null,
         estado: estadosValidos.includes(estadoNorm) ? estadoNorm : "activo",
-        ciclo: [15, 30].includes(Number(f.ciclo)) ? Number(f.ciclo) : 15,
+        ciclo: cicloNum,
         pppoe_usuario: f.pppoe_usuario || null,
         pppoe_secret: f.pppoe_secret || null,
         ip_asignada: f.ip_asignada || null,
         equipo: f.equipo || null,
         cedula: f.cedula || null,
-        fecha_instalacion: f.fecha_instalacion || null,
-        plan_id: f.plan_id || null,
+        fecha_instalacion: parseFechaFlexible(f.fecha_instalacion),
+        plan_id: planEncontrado ? planEncontrado.id : null,
       };
     });
     const { error } = await supabase.from("clientes").insert(payload);
@@ -884,6 +917,7 @@ export default function App() {
         <ImportForm
           planes={planes}
           onCancel={() => setImportModal(false)}
+          onEnsurePlanes={ensurePlanes}
           onImport={importarClientes}
         />
       )}
@@ -1144,23 +1178,25 @@ const CAMPOS_IMPORTABLES = [
   { key: "nombre", label: "Nombre", requerido: true },
   { key: "telefono", label: "Teléfono" },
   { key: "direccion", label: "Dirección" },
-  { key: "estado", label: "Estado (activo/moroso/suspendido)" },
-  { key: "ciclo", label: "Ciclo (15 o 30)" },
+  { key: "estado", label: "Estado (Activo/Suspendido/Cancelado)" },
+  { key: "ciclo", label: "Ciclo (columna que diga 15 o 30, ej. 'Router')" },
   { key: "plan", label: "Nombre del plan" },
-  { key: "pppoe_usuario", label: "Usuario PPPoE" },
+  { key: "plan_precio", label: "Precio del plan (para crearlo si no existe)" },
+  { key: "pppoe_usuario", label: "Usuario PPPoE / Servicio" },
   { key: "pppoe_secret", label: "Secret PPPoE" },
   { key: "ip_asignada", label: "IP asignada" },
   { key: "equipo", label: "Equipo / router" },
   { key: "cedula", label: "Cédula" },
-  { key: "fecha_instalacion", label: "Fecha de instalación (AAAA-MM-DD)" },
+  { key: "fecha_instalacion", label: "Fecha de instalación" },
 ];
 
-function ImportForm({ planes, onCancel, onImport }) {
+function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
   const [headers, setHeaders] = useState([]);
   const [rows, setRows] = useState([]);
   const [mapping, setMapping] = useState({});
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
+  const [importando, setImportando] = useState(false);
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -1171,10 +1207,9 @@ function ImportForm({ planes, onCancel, onImport }) {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
-        const cols = results.meta.fields || [];
+        const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
         setHeaders(cols);
         setRows(results.data);
-        // auto-mapeo por coincidencia de nombre
         const auto = {};
         CAMPOS_IMPORTABLES.forEach((c) => {
           const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
@@ -1186,24 +1221,35 @@ function ImportForm({ planes, onCancel, onImport }) {
     });
   };
 
-  const confirmar = () => {
+  const confirmar = async () => {
     if (!mapping.nombre) {
       setError("Debes indicar cuál columna es el nombre del cliente.");
       return;
     }
+    setImportando(true);
+    setError("");
     const filas = rows.map((r) => {
       const obj = {};
       CAMPOS_IMPORTABLES.forEach((c) => {
         const header = mapping[c.key];
         obj[c.key] = header ? (r[header] || "").trim() : "";
       });
-      if (obj.plan) {
-        const planEncontrado = planes.find((p) => p.nombre.toLowerCase().trim() === obj.plan.toLowerCase().trim());
-        obj.plan_id = planEncontrado ? planEncontrado.id : null;
-      }
       return obj;
     }).filter((f) => f.nombre);
-    onImport(filas);
+
+    const unicos = [];
+    const vistos = new Set();
+    filas.forEach((f) => {
+      const clave = (f.plan || "").toLowerCase().trim();
+      if (f.plan && !vistos.has(clave)) {
+        vistos.add(clave);
+        unicos.push({ nombre: f.plan, precio: parseFloat(f.plan_precio) || 0 });
+      }
+    });
+
+    const planesActualizados = unicos.length > 0 ? await onEnsurePlanes(unicos) : planes;
+    setImportando(false);
+    onImport(filas, planesActualizados);
   };
 
   return (
@@ -1240,7 +1286,9 @@ function ImportForm({ planes, onCancel, onImport }) {
           {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
           <div className="flex justify-end gap-2 mt-4">
             <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
-            <Button onClick={confirmar}>Importar {rows.length} clientes</Button>
+            <Button onClick={confirmar} disabled={importando}>
+              {importando ? "Importando…" : `Importar ${rows.length} clientes`}
+            </Button>
           </div>
         </div>
       )}
@@ -1344,6 +1392,7 @@ function ClientForm({ initial, planes, onCancel, onSave }) {
           <option value="activo">Activo</option>
           <option value="moroso">Moroso</option>
           <option value="suspendido">Suspendido</option>
+          <option value="cancelado">Cancelado</option>
         </select>
       </Field>
       <div className="flex justify-end gap-2 mt-4">
