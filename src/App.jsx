@@ -440,6 +440,7 @@ export default function App() {
     const nuevasFacturas = [];
     const nuevosMovimientos = [];
     let sinCliente = 0;
+    let duplicadas = 0;
     for (const f of filas) {
       const cliente = clientes.find((c) => c.nombre.toLowerCase().trim() === (f.cliente || "").toLowerCase().trim());
       const esOtroIngreso = (f.tipo || "").toLowerCase().includes("otro");
@@ -457,6 +458,13 @@ export default function App() {
           sinCliente++;
           continue;
         }
+        const yaExiste = facturas.some(
+          (existe) => existe.cliente_id === cliente.id && existe.fecha_vencimiento === (f.fecha_vencimiento || null)
+        );
+        if (yaExiste) {
+          duplicadas++;
+          continue;
+        }
         nuevasFacturas.push({
           cliente_id: cliente.id,
           periodo: f.fecha_vencimiento ? f.fecha_vencimiento.slice(0, 7) : "",
@@ -470,9 +478,10 @@ export default function App() {
     if (nuevosMovimientos.length > 0) await supabase.from("movimientos").insert(nuevosMovimientos);
     setImportFacturasModal(false);
     loadAll();
-    if (sinCliente > 0) {
-      setErrorMsg(`${sinCliente} factura(s) no se importaron porque no se encontró un cliente con ese nombre exacto.`);
-    }
+    const avisos = [];
+    if (sinCliente > 0) avisos.push(`${sinCliente} sin cliente coincidente`);
+    if (duplicadas > 0) avisos.push(`${duplicadas} ya existían y se omitieron`);
+    if (avisos.length > 0) setErrorMsg(`Importación completa. ${avisos.join(" · ")}.`);
   };
 
   if (session === undefined) {
