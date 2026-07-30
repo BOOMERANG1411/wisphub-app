@@ -181,7 +181,7 @@ function LoginScreen({ onLogin }) {
       >
         <div className="flex items-center gap-2 mb-6">
           <SignalHigh size={20} color={COLORS.accent} />
-          <span className="font-display font-semibold text-lg">WispHub</span>
+          <span className="font-display font-semibold text-lg">ISP-Control</span>
         </div>
         {error && (
           <div
@@ -384,7 +384,7 @@ export default function App() {
       >
         <div className="hidden md:flex items-center gap-2 px-2 mb-6">
           <SignalHigh size={20} color={COLORS.accent} />
-          <span className="font-display font-semibold text-lg">WispHub</span>
+          <span className="font-display font-semibold text-lg">ISP-Control</span>
         </div>
         <div className="flex md:flex-col w-full gap-1 justify-around md:justify-start">
           {NAV.map(({ id, label, Icon }) => (
