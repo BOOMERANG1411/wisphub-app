@@ -1265,28 +1265,33 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     }
     setImportando(true);
     setError("");
-    const filas = rows.map((r) => {
-      const obj = {};
-      CAMPOS_IMPORTABLES.forEach((c) => {
-        const header = mapping[c.key];
-        obj[c.key] = header ? (r[header] || "").trim() : "";
+    try {
+      const filas = rows.map((r) => {
+        const obj = {};
+        CAMPOS_IMPORTABLES.forEach((c) => {
+          const header = mapping[c.key];
+          obj[c.key] = header ? String(r[header] ?? "").trim() : "";
+        });
+        return obj;
+      }).filter((f) => f.nombre && f.nombre.length < 150);
+
+      const unicos = [];
+      const vistos = new Set();
+      filas.forEach((f) => {
+        const clave = (f.plan || "").toLowerCase().trim();
+        if (f.plan && f.plan.length < 100 && !vistos.has(clave)) {
+          vistos.add(clave);
+          unicos.push({ nombre: f.plan, precio: parseFloat(f.plan_precio) || 0 });
+        }
       });
-      return obj;
-    }).filter((f) => f.nombre && f.nombre.length < 150);
 
-    const unicos = [];
-    const vistos = new Set();
-    filas.forEach((f) => {
-      const clave = (f.plan || "").toLowerCase().trim();
-      if (f.plan && f.plan.length < 100 && !vistos.has(clave)) {
-        vistos.add(clave);
-        unicos.push({ nombre: f.plan, precio: parseFloat(f.plan_precio) || 0 });
-      }
-    });
-
-    const planesActualizados = unicos.length > 0 ? await onEnsurePlanes(unicos) : planes;
-    setImportando(false);
-    onImport(filas, planesActualizados);
+      const planesActualizados = unicos.length > 0 ? await onEnsurePlanes(unicos) : planes;
+      await onImport(filas, planesActualizados);
+    } catch (err) {
+      setError("Ocurrió un error al importar: " + (err.message || "revisa la consola del navegador."));
+    } finally {
+      setImportando(false);
+    }
   };
 
   return (
