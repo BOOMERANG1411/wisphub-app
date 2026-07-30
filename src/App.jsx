@@ -322,6 +322,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [tab, setTab] = useState("dashboard");
+  const [facturaFiltro, setFacturaFiltro] = useState("todas");
   const [search, setSearch] = useState("");
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
@@ -958,13 +959,29 @@ export default function App() {
                 </Button>
               </div>
             </div>
+            {facturaFiltro !== "todas" && (
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
+                <FacturaBadge estado={facturaFiltro} />
+                <button onClick={() => setFacturaFiltro("todas")} className="text-xs underline" style={{ color: COLORS.accent }}>
+                  Quitar filtro
+                </button>
+              </div>
+            )}
             <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
-              {facturas.length === 0 ? (
-                <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
-                  No hay facturas todavía.
-                </div>
-              ) : (
-                facturas.slice().reverse().map((f) => {
+              {(() => {
+                const facturasFiltradas = facturas
+                  .slice()
+                  .reverse()
+                  .filter((f) => facturaFiltro === "todas" || estadoVisual(f, new Date()) === facturaFiltro);
+                if (facturasFiltradas.length === 0) {
+                  return (
+                    <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
+                      No hay facturas que coincidan.
+                    </div>
+                  );
+                }
+                return facturasFiltradas.map((f) => {
                   const c = clientes.find((c) => c.id === f.cliente_id);
                   const visual = estadoVisual(f, new Date());
                   const mensaje = c ? mensajeRecordatorio(c, f) : "";
@@ -1016,12 +1033,23 @@ export default function App() {
                       </div>
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
             </div>
           </div>
         )}
-        {tab === "reportes" && <ReportesTab clientes={clientes} planes={planes} facturas={facturas} movimientos={movimientos} />}
+        {tab === "reportes" && (
+          <ReportesTab
+            clientes={clientes}
+            planes={planes}
+            facturas={facturas}
+            movimientos={movimientos}
+            onVerFacturas={(filtro) => {
+              setFacturaFiltro(filtro);
+              setTab("facturacion");
+            }}
+          />
+        )}
         {tab === "mapa" && <MapaTab clientes={clientes} planById={planById} onImportar={() => setImportUbicacionModal(true)} />}
         {tab === "caja" && (
           <CajaTab
@@ -1233,7 +1261,7 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
   );
 }
 
-function ReportesTab({ clientes, planes, facturas, movimientos }) {
+function ReportesTab({ clientes, planes, facturas, movimientos, onVerFacturas }) {
   const hoy = new Date();
 
   const exportarExcel = () => {
@@ -1350,16 +1378,21 @@ function ReportesTab({ clientes, planes, facturas, movimientos }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
         {[
-          { label: "Total facturado", value: money(totalFacturado), color: COLORS.text },
-          { label: "Cobrado", value: money(totalCobrado), color: COLORS.active },
-          { label: "Pendiente", value: money(totalPendiente), color: COLORS.warn },
-          { label: "Vencido", value: money(totalVencido), color: COLORS.danger },
-          { label: "Tasa de cobro", value: `${tasaCobro}%`, color: COLORS.accent },
+          { label: "Total facturado", value: money(totalFacturado), color: COLORS.text, filtro: "todas" },
+          { label: "Cobrado", value: money(totalCobrado), color: COLORS.active, filtro: "pagada" },
+          { label: "Pendiente", value: money(totalPendiente), color: COLORS.warn, filtro: "pendiente" },
+          { label: "Vencido", value: money(totalVencido), color: COLORS.danger, filtro: "vencida" },
+          { label: "Tasa de cobro", value: `${tasaCobro}%`, color: COLORS.accent, filtro: "todas" },
         ].map((k) => (
-          <div key={k.label} className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+          <button
+            key={k.label}
+            onClick={() => onVerFacturas(k.filtro)}
+            className="rounded-xl p-4 text-left transition-opacity hover:opacity-80"
+            style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
+          >
             <div className="text-xs mb-2" style={{ color: COLORS.dim }}>{k.label}</div>
             <div className="font-mono text-lg font-medium" style={{ color: k.color }}>{k.value}</div>
-          </div>
+          </button>
         ))}
       </div>
 
