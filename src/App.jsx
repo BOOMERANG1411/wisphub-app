@@ -319,6 +319,7 @@ export default function App() {
   const [planes, setPlanes] = useState([]);
   const [facturas, setFacturas] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
+  const [historialMensual, setHistorialMensual] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [tab, setTab] = useState("dashboard");
@@ -349,14 +350,15 @@ export default function App() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
-    const [c, p, f, m] = await Promise.all([
+    const [c, p, f, m, hm] = await Promise.all([
       supabase.from("clientes").select("*").order("nombre"),
       supabase.from("planes").select("*").order("precio"),
       supabase.from("facturas").select("*").order("fecha_vencimiento", { ascending: true }),
       supabase.from("movimientos").select("*").order("fecha", { ascending: false }),
+      supabase.from("historial_mensual").select("*").order("mes", { ascending: true }),
     ]);
-    if (c.error || p.error || f.error || m.error) {
-      setErrorMsg((c.error || p.error || f.error || m.error).message);
+    if (c.error || p.error || f.error || m.error || hm.error) {
+      setErrorMsg((c.error || p.error || f.error || m.error || hm.error).message);
       setLoading(false);
       return;
     }
@@ -366,6 +368,7 @@ export default function App() {
     setPlanes(p.data || []);
     setFacturas(f2.data || f.data || []);
     setMovimientos(m.data || []);
+    setHistorialMensual(hm.data || []);
     setLoading(false);
   }, []);
 
@@ -583,6 +586,20 @@ export default function App() {
     setImportHistorialModal(false);
     loadAll();
     setErrorMsg(`Historial importado: ${nuevas.length} · Ya existían: ${duplicadas} · Sin cliente: ${sinCliente} · Sin fecha válida: ${sinFecha}`);
+  };
+
+  const saveHistorialMes = async (fila) => {
+    const { error } = await supabase.from("historial_mensual").upsert(
+      { mes: fila.mes, pagos_internet: fila.pagos_internet, otros_ingresos: fila.otros_ingresos, gastos: fila.gastos },
+      { onConflict: "mes" }
+    );
+    if (error) setErrorMsg(error.message);
+    else loadAll();
+  };
+  const deleteHistorialMes = async (mes) => {
+    const { error } = await supabase.from("historial_mensual").delete().eq("mes", mes);
+    if (error) setErrorMsg(error.message);
+    else loadAll();
   };
 
   if (session === undefined) {
@@ -1101,6 +1118,9 @@ export default function App() {
             planes={planes}
             facturas={facturas}
             movimientos={movimientos}
+            historialMensual={historialMensual}
+            onGuardarHistorialMes={saveHistorialMes}
+            onEliminarHistorialMes={deleteHistorialMes}
             onVerFacturas={(filtro) => {
               setFacturaFiltro(filtro);
               setTab("facturacion");
@@ -1268,6 +1288,116 @@ function MovimientoForm({ initial, onCancel, onSave }) {
   );
 }
 
+function HistorialMensualTabla({ historialMensual, onGuardar, onEliminar }) {
+  const [nuevoMes, setNuevoMes] = useState("");
+  const [editando, setEditando] = useState({});
+
+  const iniciarEdicion = (fila) => {
+    setEditando({
+      mes: fila.mes,
+      pagos_internet: fila.pagos_internet,
+      otros_ingresos: fila.otros_ingresos,
+      gastos: fila.gastos,
+    });
+  };
+
+  const guardarEdicion = () => {
+    onGuardar({
+      mes: editando.mes,
+      pagos_internet: parseFloat(editando.pagos_internet) || 0,
+      otros_ingresos: parseFloat(editando.otros_ingresos) || 0,
+      gastos: parseFloat(editando.gastos) || 0,
+    });
+    setEditando({});
+  };
+
+  const agregarMes = () => {
+    if (!nuevoMes) return;
+    onGuardar({ mes: nuevoMes, pagos_internet: 0, otros_ingresos: 0, gastos: 0 });
+    setNuevoMes("");
+  };
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-8" style={{ border: `1px solid ${COLORS.border}` }}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" style={{ backgroundColor: COLORS.panel }}>
+          <thead>
+            <tr style={{ color: COLORS.dim, borderBottom: `1px solid ${COLORS.border}` }}>
+              <th className="text-left px-4 py-2 font-normal">Mes</th>
+              <th className="text-right px-4 py-2 font-normal">Pagos Internet</th>
+              <th className="text-right px-4 py-2 font-normal">Otros Ingresos</th>
+              <th className="text-right px-4 py-2 font-normal">Gastos</th>
+              <th className="text-right px-4 py-2 font-normal">Total</th>
+              <th className="px-2 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {historialMensual.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="text-center py-6 font-sans" style={{ color: COLORS.dim }}>
+                  Sin meses agregados todavía.
+                </td>
+              </tr>
+            ) : (
+              historialMensual.map((h) => {
+                const enEdicion = editando.mes === h.mes;
+                const total = enEdicion
+                  ? (parseFloat(editando.pagos_internet) || 0) + (parseFloat(editando.otros_ingresos) || 0) - (parseFloat(editando.gastos) || 0)
+                  : Number(h.pagos_internet) + Number(h.otros_ingresos) - Number(h.gastos);
+                return (
+                  <tr key={h.mes} style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                    <td className="px-4 py-2 font-sans" style={{ color: COLORS.text }}>{h.mes}</td>
+                    {enEdicion ? (
+                      <>
+                        <td className="px-2 py-1">
+                          <input type="number" style={{ ...inputStyle, textAlign: "right" }} value={editando.pagos_internet}
+                            onChange={(e) => setEditando({ ...editando, pagos_internet: e.target.value })} />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input type="number" style={{ ...inputStyle, textAlign: "right" }} value={editando.otros_ingresos}
+                            onChange={(e) => setEditando({ ...editando, otros_ingresos: e.target.value })} />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input type="number" style={{ ...inputStyle, textAlign: "right" }} value={editando.gastos}
+                            onChange={(e) => setEditando({ ...editando, gastos: e.target.value })} />
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="text-right px-4 py-2">{money(h.pagos_internet)}</td>
+                        <td className="text-right px-4 py-2" style={{ color: COLORS.active }}>{money(h.otros_ingresos)}</td>
+                        <td className="text-right px-4 py-2" style={{ color: COLORS.danger }}>{money(h.gastos)}</td>
+                      </>
+                    )}
+                    <td className="text-right px-4 py-2 font-medium" style={{ color: COLORS.text }}>{money(total)}</td>
+                    <td className="px-2 py-2 whitespace-nowrap">
+                      {enEdicion ? (
+                        <button onClick={guardarEdicion} style={{ color: COLORS.active }}><CheckCircle2 size={15} /></button>
+                      ) : (
+                        <button onClick={() => iniciarEdicion(h)} style={{ color: COLORS.dim }}><Pencil size={14} /></button>
+                      )}
+                      <button onClick={() => onEliminar(h.mes)} style={{ color: COLORS.dim, marginLeft: 8 }}><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex items-center gap-2 p-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+        <input
+          type="month"
+          style={{ ...inputStyle, maxWidth: 160 }}
+          value={nuevoMes}
+          onChange={(e) => setNuevoMes(e.target.value)}
+        />
+        <Button variant="ghost" onClick={agregarMes}><Plus size={14} /> Agregar mes</Button>
+      </div>
+    </div>
+  );
+}
+
 function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
   const gastos = movimientos.filter((m) => m.tipo === "gasto");
   const ingresos = movimientos.filter((m) => m.tipo === "otro_ingreso");
@@ -1324,7 +1454,7 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
   );
 }
 
-function ReportesTab({ clientes, planes, facturas, movimientos, onVerFacturas }) {
+function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual, onGuardarHistorialMes, onEliminarHistorialMes, onVerFacturas }) {
   const hoy = new Date();
 
   const exportarExcel = () => {
@@ -1527,6 +1657,16 @@ function ReportesTab({ clientes, planes, facturas, movimientos, onVerFacturas })
           </tbody>
         </table>
       </div>
+
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>HISTORIAL MENSUAL (AÑOS ANTERIORES)</h2>
+      <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+        Escribe aquí los totales que ya tienes calculados en WispHub para meses que no vas a re-facturar en esta app.
+      </p>
+      <HistorialMensualTabla
+        historialMensual={historialMensual}
+        onGuardar={onGuardarHistorialMes}
+        onEliminar={onEliminarHistorialMes}
+      />
 
       <div className="grid md:grid-cols-2 gap-6">
         <div>
