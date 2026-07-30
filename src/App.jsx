@@ -402,7 +402,9 @@ export default function App() {
       const vencISO = fmtISO(vencimiento);
       const mesClave = vencISO.slice(0, 7);
       const yaExiste = facturasData.some(
-        (f) => f.cliente_id === cliente.id && (f.fecha_vencimiento || "").slice(0, 7) === mesClave
+        (f) =>
+          f.cliente_id === cliente.id &&
+          (f.fecha_vencimiento === vencISO || (f.estado === "pagada" && (f.fecha_vencimiento || "").slice(0, 7) === mesClave))
       );
       if (yaExiste) continue;
       const plan = planesData.find((p) => p.id === cliente.plan_id);
