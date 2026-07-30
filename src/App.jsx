@@ -400,7 +400,10 @@ export default function App() {
       const { generar, vencimiento, periodo } = cicloInfo(cliente.ciclo || 15, hoy);
       if (!generar) continue;
       const vencISO = fmtISO(vencimiento);
-      const yaExiste = facturasData.some((f) => f.cliente_id === cliente.id && f.fecha_vencimiento === vencISO);
+      const mesClave = vencISO.slice(0, 7);
+      const yaExiste = facturasData.some(
+        (f) => f.cliente_id === cliente.id && (f.fecha_vencimiento || "").slice(0, 7) === mesClave
+      );
       if (yaExiste) continue;
       const plan = planesData.find((p) => p.id === cliente.plan_id);
       nuevas.push({
@@ -488,8 +491,9 @@ export default function App() {
           sinCliente++;
           continue;
         }
+        const mesClave = f.fecha_vencimiento ? f.fecha_vencimiento.slice(0, 7) : null;
         const yaExiste = facturas.some(
-          (existe) => existe.cliente_id === cliente.id && existe.fecha_vencimiento === (f.fecha_vencimiento || null)
+          (existe) => existe.cliente_id === cliente.id && mesClave && (existe.fecha_vencimiento || "").slice(0, 7) === mesClave
         );
         if (yaExiste) {
           duplicadas++;
@@ -583,14 +587,19 @@ export default function App() {
   const importarHistorialIngresos = async (filas) => {
     const formaPagoMap = { "efectivo": "efectivo", "transferencia bancaria": "transferencia", "saldo a favor": "saldo_favor" };
     const nuevas = [];
+    const yaImportadosEnEsteLote = new Set(); // evita duplicar dentro del mismo archivo también
     let sinCliente = 0, duplicadas = 0, sinFecha = 0;
     for (const f of filas) {
       const cliente = clientes.find((c) => c.nombre.toLowerCase().trim() === f.cliente.toLowerCase().trim());
       if (!cliente) { sinCliente++; continue; }
       const fechaISO = parseFechaFlexible(f.fecha);
       if (!fechaISO) { sinFecha++; continue; }
-      const yaExiste = facturas.some((fa) => fa.cliente_id === cliente.id && fa.fecha_vencimiento === fechaISO);
+      const mesClave = `${cliente.id}-${fechaISO.slice(0, 7)}`;
+      const yaExiste =
+        facturas.some((fa) => fa.cliente_id === cliente.id && fa.estado === "pagada" && (fa.fecha_vencimiento || "").slice(0, 7) === fechaISO.slice(0, 7)) ||
+        yaImportadosEnEsteLote.has(mesClave);
       if (yaExiste) { duplicadas++; continue; }
+      yaImportadosEnEsteLote.add(mesClave);
       const fp = formaPagoMap[(f.forma_pago || "").toLowerCase().trim()] || "efectivo";
       nuevas.push({
         cliente_id: cliente.id,
@@ -604,7 +613,7 @@ export default function App() {
     if (nuevas.length > 0) await supabase.from("facturas").insert(nuevas);
     setImportHistorialModal(false);
     loadAll();
-    setErrorMsg(`Historial importado: ${nuevas.length} · Ya existían: ${duplicadas} · Sin cliente: ${sinCliente} · Sin fecha válida: ${sinFecha}`);
+    setErrorMsg(`Historial importado: ${nuevas.length} · Ya existían (mismo cliente y mes): ${duplicadas} · Sin cliente: ${sinCliente} · Sin fecha válida: ${sinFecha}`);
   };
 
   const saveHistorialMes = async (fila) => {
