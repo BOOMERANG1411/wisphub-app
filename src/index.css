@@ -6,3 +6,10 @@
 body { font-family: 'Inter', sans-serif; margin: 0; }
 .font-display { font-family: 'Space Grotesk', sans-serif; }
 .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+@media print {
+  .no-print { display: none !important; }
+  body, #root { background: #fff !important; color: #000 !important; }
+  * { color: #000 !important; background: #fff !important; border-color: #ccc !important; }
+  .print-area { padding: 0 !important; margin: 0 !important; }
+}
