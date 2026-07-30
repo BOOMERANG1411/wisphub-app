@@ -85,21 +85,18 @@ function cicloInfo(ciclo, hoy) {
   const dia = hoy.getDate();
   if (ciclo === 15) {
     const generar = dia >= 10;
-    const vencimiento = new Date(y, m, 15);
-    const suspension = new Date(y, m, 20);
-    return { generar, vencimiento, suspension, periodo: `${MESES[m]} ${y}` };
+    const vencimiento = new Date(y, m, 20);
+    return { generar, vencimiento, periodo: `${MESES[m]} ${y}` };
   }
-  // ciclo 30 (fin de mes)
+  // ciclo 30: el limite real de pago es el dia 5 del mes siguiente
   const generar = dia >= 25;
-  const vencimiento = new Date(y, m, ultimoDiaMes(y, m));
-  const suspensionMes = m === 11 ? 0 : m + 1;
-  const suspensionAnio = m === 11 ? y + 1 : y;
-  const suspension = new Date(suspensionAnio, suspensionMes, 5);
-  return { generar, vencimiento, suspension, periodo: `${MESES[m]} ${y}` };
+  const vMes = m === 11 ? 0 : m + 1;
+  const vAnio = m === 11 ? y + 1 : y;
+  const vencimiento = new Date(vAnio, vMes, 5);
+  return { generar, vencimiento, periodo: `${MESES[m]} ${y}` };
 }
 
-// Estado "visual" de una factura: si venció el plazo de gracia y sigue sin pagar, se ve como vencida,
-// sin necesidad de cambiar el estado guardado.
+// Estado "visual" de una factura: vencida si ya paso su fecha limite de pago sin marcarse como pagada.
 function estadoVisual(factura, hoy) {
   if (factura.estado === "pagada") return "pagada";
   if (factura.prorroga_hasta) {
@@ -107,34 +104,15 @@ function estadoVisual(factura, hoy) {
     return hoy > limite ? "vencida" : "pendiente";
   }
   if (!factura.fecha_vencimiento) return factura.estado;
-  const venc = new Date(factura.fecha_vencimiento + "T00:00:00");
-  const dia = venc.getDate();
-  let suspension;
-  if (dia === 15) {
-    suspension = new Date(venc.getFullYear(), venc.getMonth(), 20);
-  } else {
-    const sm = venc.getMonth() === 11 ? 0 : venc.getMonth() + 1;
-    const sy = venc.getMonth() === 11 ? venc.getFullYear() + 1 : venc.getFullYear();
-    suspension = new Date(sy, sm, 5);
-  }
-  return hoy >= suspension ? "vencida" : "pendiente";
+  const venc = new Date(factura.fecha_vencimiento + "T23:59:59");
+  return hoy > venc ? "vencida" : "pendiente";
 }
 
 function mensajeRecordatorio(cliente, factura) {
   if (factura.prorroga_hasta) {
-    return `Hola ${cliente.nombre}, te confirmamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} tiene plazo hasta el ${factura.prorroga_hasta} antes de la suspensión del servicio. ¡Gracias por tu comprensión!`;
+    return `Hola ${cliente.nombre}, te confirmamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} tiene plazo hasta el ${factura.prorroga_hasta} antes de la suspension del servicio. Gracias por tu comprension!`;
   }
-  const venc = factura.fecha_vencimiento ? new Date(factura.fecha_vencimiento + "T00:00:00") : null;
-  const dia = venc ? venc.getDate() : null;
-  let fechaLimite, fechaSuspension;
-  if (dia === 15) {
-    fechaLimite = "19";
-    fechaSuspension = `la mañana del 20`;
-  } else {
-    fechaLimite = "4";
-    fechaSuspension = `la mañana del 5`;
-  }
-  return `Hola ${cliente.nombre}, te recordamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} vence el ${factura.fecha_vencimiento || ""}. Para evitar la suspensión del servicio, te pedimos realizar tu pago antes del día ${fechaLimite} (la suspensión aplicaría ${fechaSuspension}). Recuerda: estar al día antes de esa fecha te hace elegible para nuestro sorteo mensual del día 4 (mes gratis o artículos). No estamos obligados a realizar sorteos — lo hacemos para incentivar el pago a tiempo, ya que así cubrimos a tiempo nuestros compromisos con el servicio. Nuestro compromiso contigo es que el servicio contratado te siga llegando. ¡Gracias por tu preferencia!`;
+  return `Hola ${cliente.nombre}, te recordamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} vence el ${factura.fecha_vencimiento || ""}. Despues de esa fecha el servicio podria suspenderse. Recuerda: estar al dia antes de esa fecha te hace elegible para nuestro sorteo mensual del dia 4 (mes gratis o articulos). No estamos obligados a realizar sorteos, lo hacemos para incentivar el pago a tiempo, ya que asi cubrimos a tiempo nuestros compromisos con el servicio. Nuestro compromiso contigo es que el servicio contratado te siga llegando. Gracias por tu preferencia!`;
 }
 
 const COLORS = {
@@ -350,6 +328,7 @@ export default function App() {
   const [importModal, setImportModal] = useState(false);
   const [pagoModal, setPagoModal] = useState(null);
   const [movimientoModal, setMovimientoModal] = useState(null);
+  const [importFacturasModal, setImportFacturasModal] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -454,6 +433,45 @@ export default function App() {
     else {
       setImportModal(false);
       loadAll();
+    }
+  };
+
+  const importarFacturas = async (filas) => {
+    const nuevasFacturas = [];
+    const nuevosMovimientos = [];
+    let sinCliente = 0;
+    for (const f of filas) {
+      const cliente = clientes.find((c) => c.nombre.toLowerCase().trim() === (f.cliente || "").toLowerCase().trim());
+      const esOtroIngreso = (f.tipo || "").toLowerCase().includes("otro");
+      const estadoNorm = (f.estado || "").toLowerCase().includes("pagad") ? "pagada" : "pendiente";
+      if (esOtroIngreso) {
+        nuevosMovimientos.push({
+          fecha: f.fecha_emision || fmtISO(new Date()),
+          tipo: "otro_ingreso",
+          descripcion: f.cliente || "Ingreso importado",
+          monto: parseFloat(f.monto) || 0,
+          forma_pago: "efectivo",
+        });
+      } else {
+        if (!cliente) {
+          sinCliente++;
+          continue;
+        }
+        nuevasFacturas.push({
+          cliente_id: cliente.id,
+          periodo: f.fecha_vencimiento ? f.fecha_vencimiento.slice(0, 7) : "",
+          monto: parseFloat(f.monto) || 0,
+          estado: estadoNorm,
+          fecha_vencimiento: f.fecha_vencimiento || null,
+        });
+      }
+    }
+    if (nuevasFacturas.length > 0) await supabase.from("facturas").insert(nuevasFacturas);
+    if (nuevosMovimientos.length > 0) await supabase.from("movimientos").insert(nuevosMovimientos);
+    setImportFacturasModal(false);
+    loadAll();
+    if (sinCliente > 0) {
+      setErrorMsg(`${sinCliente} factura(s) no se importaron porque no se encontró un cliente con ese nombre exacto.`);
     }
   };
 
@@ -845,9 +863,14 @@ export default function App() {
           <div>
             <div className="flex items-center justify-between mb-5">
               <h1 className="font-display text-xl md:text-2xl font-semibold">Facturación</h1>
-              <Button onClick={() => setInvoiceModal({})}>
-                <Plus size={16} /> Nueva factura
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
+                  <Upload size={16} /> Importar historial
+                </Button>
+                <Button onClick={() => setInvoiceModal({})}>
+                  <Plus size={16} /> Nueva factura
+                </Button>
+              </div>
             </div>
             <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
               {facturas.length === 0 ? (
@@ -971,6 +994,12 @@ export default function App() {
           initial={movimientoModal}
           onCancel={() => setMovimientoModal(null)}
           onSave={saveMovimiento}
+        />
+      )}
+      {importFacturasModal && (
+        <ImportFacturasForm
+          onCancel={() => setImportFacturasModal(false)}
+          onImport={importarFacturas}
         />
       )}
     </div>
@@ -1569,6 +1598,152 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
             <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
             <Button onClick={confirmar} disabled={importando}>
               {importando ? "Importando…" : `Importar ${rows.length} clientes`}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+const CAMPOS_FACTURAS = [
+  { key: "cliente", label: "Cliente (debe coincidir con el Nombre exacto)", requerido: true },
+  { key: "fecha_emision", label: "Fecha de emisión" },
+  { key: "fecha_vencimiento", label: "Fecha de vencimiento" },
+  { key: "estado", label: "Estado (Pendiente de pago / Pagada)" },
+  { key: "tipo", label: "Tipo (Internet / Otros Ingresos)" },
+  { key: "monto", label: "Total", requerido: true },
+];
+
+function ImportFacturasForm({ onCancel, onImport }) {
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [mapping, setMapping] = useState({});
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [importando, setImportando] = useState(false);
+
+  const procesarResultados = (results) => {
+    const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+    setHeaders(cols);
+    setRows(results.data);
+    const auto = {};
+    CAMPOS_FACTURAS.forEach((c) => {
+      const match = cols.find((h) => h.toLowerCase().includes(c.key.split("_")[0]));
+      if (match) auto[c.key] = match;
+    });
+    setMapping(auto);
+  };
+
+  const intentarParseo = (file, delimitadores) => {
+    const [actual, ...resto] = delimitadores;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      delimiter: actual,
+      complete: (results) => {
+        const cols = (results.meta.fields || []).filter((h) => h && h.trim() !== "");
+        if (cols.length <= 1 && resto.length > 0) intentarParseo(file, resto);
+        else procesarResultados(results);
+      },
+      error: () => setError("No se pudo leer el archivo."),
+    });
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    const esExcel = /\.(xlsx|xls)$/i.test(file.name);
+    if (esExcel) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const wb = XLSX.read(evt.target.result, { type: "array" });
+          const hoja = wb.Sheets[wb.SheetNames[0]];
+          const data = XLSX.utils.sheet_to_json(hoja, { defval: "" });
+          const primeraFila = XLSX.utils.sheet_to_json(hoja, { header: 1 })[0] || [];
+          const cols = primeraFila.map(String).filter((h) => h && h.trim() !== "");
+          procesarResultados({ meta: { fields: cols }, data });
+        } catch (err) {
+          setError("No se pudo leer el archivo de Excel.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      intentarParseo(file, [",", "\t", ";"]);
+    }
+  };
+
+  const normalizarFecha = (v) => {
+    if (!v) return "";
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const f = parseFechaFlexible(s);
+    return f || "";
+  };
+
+  const confirmar = async () => {
+    if (!mapping.cliente || !mapping.monto) {
+      setError("Debes indicar cuál columna es el cliente y cuál el monto.");
+      return;
+    }
+    setImportando(true);
+    setError("");
+    try {
+      const filas = rows.map((r) => ({
+        cliente: mapping.cliente ? String(r[mapping.cliente] ?? "").trim() : "",
+        fecha_emision: mapping.fecha_emision ? normalizarFecha(r[mapping.fecha_emision]) : "",
+        fecha_vencimiento: mapping.fecha_vencimiento ? normalizarFecha(r[mapping.fecha_vencimiento]) : "",
+        estado: mapping.estado ? String(r[mapping.estado] ?? "").trim() : "",
+        tipo: mapping.tipo ? String(r[mapping.tipo] ?? "").trim() : "",
+        monto: mapping.monto ? String(r[mapping.monto] ?? "").trim() : "",
+      })).filter((f) => f.cliente);
+      await onImport(filas);
+    } catch (err) {
+      setError("Ocurrió un error al importar: " + (err.message || ""));
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  return (
+    <Modal title="Importar historial de facturas" onClose={onCancel}>
+      {headers.length === 0 ? (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+            Sube el archivo de facturas exportado de WispHub (Excel o CSV). Las filas de tipo "Otros Ingresos" se guardan en Caja en vez de en Facturación.
+          </p>
+          <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} style={{ color: COLORS.text, fontSize: 13 }} />
+          {error && <p className="text-xs mt-3" style={{ color: COLORS.danger }}>{error}</p>}
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+            {fileName} · {rows.length} filas detectadas.
+          </p>
+          <div className="max-h-72 overflow-y-auto pr-1">
+            {CAMPOS_FACTURAS.map((c) => (
+              <Field key={c.key} label={c.label + (c.requerido ? " *" : "")}>
+                <select
+                  style={inputStyle}
+                  value={mapping[c.key] || ""}
+                  onChange={(e) => setMapping({ ...mapping, [c.key]: e.target.value })}
+                >
+                  <option value="">No usar</option>
+                  {headers.map((h) => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+          </div>
+          {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+            <Button onClick={confirmar} disabled={importando}>
+              {importando ? "Importando…" : `Importar ${rows.length} facturas`}
             </Button>
           </div>
         </div>
