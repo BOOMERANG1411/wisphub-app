@@ -20,6 +20,7 @@ import {
   MapPin,
   Navigation,
   MessageCircle,
+  CalendarPlus,
 } from "lucide-react";
 import {
   BarChart,
@@ -80,6 +81,10 @@ function cicloInfo(ciclo, hoy) {
 // sin necesidad de cambiar el estado guardado.
 function estadoVisual(factura, hoy) {
   if (factura.estado === "pagada") return "pagada";
+  if (factura.prorroga_hasta) {
+    const limite = new Date(factura.prorroga_hasta + "T23:59:59");
+    return hoy > limite ? "vencida" : "pendiente";
+  }
   if (!factura.fecha_vencimiento) return factura.estado;
   const venc = new Date(factura.fecha_vencimiento + "T00:00:00");
   const dia = venc.getDate();
@@ -95,6 +100,9 @@ function estadoVisual(factura, hoy) {
 }
 
 function mensajeRecordatorio(cliente, factura) {
+  if (factura.prorroga_hasta) {
+    return `Hola ${cliente.nombre}, te confirmamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} tiene plazo hasta el ${factura.prorroga_hasta} antes de la suspensión del servicio. ¡Gracias por tu comprensión!`;
+  }
   const venc = factura.fecha_vencimiento ? new Date(factura.fecha_vencimiento + "T00:00:00") : null;
   const dia = venc ? venc.getDate() : null;
   let fechaLimite, fechaSuspension;
@@ -315,6 +323,7 @@ export default function App() {
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
+  const [prorrogaModal, setProrrogaModal] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -463,6 +472,14 @@ export default function App() {
     const { error } = await supabase.from("facturas").delete().eq("id", id);
     if (error) setErrorMsg(error.message);
     else loadAll();
+  };
+  const saveProrroga = async (facturaId, fecha) => {
+    const { error } = await supabase.from("facturas").update({ prorroga_hasta: fecha }).eq("id", facturaId);
+    if (error) setErrorMsg(error.message);
+    else {
+      setProrrogaModal(null);
+      loadAll();
+    }
   };
 
   if (loading) {
@@ -741,6 +758,7 @@ export default function App() {
                         <div className="text-sm font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
                         <div className="text-xs" style={{ color: COLORS.dim }}>
                           Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
+                          {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
@@ -750,6 +768,15 @@ export default function App() {
                           <Button variant="ghost" onClick={() => markPaid(f.id)}>
                             Marcar pagada
                           </Button>
+                        )}
+                        {f.estado !== "pagada" && (
+                          <button
+                            onClick={() => setProrrogaModal(f)}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                            style={{ color: COLORS.warn, border: `1px solid ${COLORS.warn}40`, backgroundColor: COLORS.warn + "1A" }}
+                          >
+                            <CalendarPlus size={13} /> Prórroga
+                          </button>
                         )}
                         {f.estado !== "pagada" && link && (
                           <a
@@ -795,6 +822,13 @@ export default function App() {
           planById={planById}
           onCancel={() => setInvoiceModal(null)}
           onSave={saveInvoice}
+        />
+      )}
+      {prorrogaModal && (
+        <ProrrogaForm
+          factura={prorrogaModal}
+          onCancel={() => setProrrogaModal(null)}
+          onSave={(fecha) => saveProrroga(prorrogaModal.id, fecha)}
         />
       )}
     </div>
@@ -1010,6 +1044,43 @@ function LocationPicker({ lat, lng, onChange }) {
         </MapContainer>
       </div>
     </div>
+  );
+}
+
+function ProrrogaForm({ factura, onCancel, onSave }) {
+  const hoyMas = (dias) => {
+    const d = new Date();
+    d.setDate(d.getDate() + dias);
+    return fmtISO(d);
+  };
+  const [fecha, setFecha] = useState(factura.prorroga_hasta || hoyMas(3));
+
+  return (
+    <Modal title="Dar prórroga" onClose={onCancel}>
+      <p className="text-xs mb-4" style={{ color: COLORS.dim }}>
+        Elige hasta qué fecha le das margen a este cliente antes de considerarlo vencido. No afecta a los demás clientes ni cambia las reglas generales.
+      </p>
+      <div className="flex gap-2 mb-4">
+        {[3, 5, 7].map((dias) => (
+          <button
+            key={dias}
+            type="button"
+            onClick={() => setFecha(hoyMas(dias))}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+          >
+            +{dias} días
+          </button>
+        ))}
+      </div>
+      <Field label="Prórroga hasta">
+        <input type="date" style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} />
+      </Field>
+      <div className="flex justify-end gap-2 mt-4">
+        <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button onClick={() => fecha && onSave(fecha)}>Guardar prórroga</Button>
+      </div>
+    </Modal>
   );
 }
 
