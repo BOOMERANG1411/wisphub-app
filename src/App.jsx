@@ -347,14 +347,33 @@ export default function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  // Supabase solo devuelve hasta 1000 filas por consulta; esto trae todas las páginas necesarias.
+  const fetchTodo = async (tabla, orderBy, ascending) => {
+    let todos = [];
+    let desde = 0;
+    const tam = 1000;
+    while (true) {
+      const { data, error } = await supabase
+        .from(tabla)
+        .select("*")
+        .order(orderBy, { ascending })
+        .range(desde, desde + tam - 1);
+      if (error) return { data: null, error };
+      todos = todos.concat(data || []);
+      if (!data || data.length < tam) break;
+      desde += tam;
+    }
+    return { data: todos, error: null };
+  };
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
     const [c, p, f, m, hm] = await Promise.all([
-      supabase.from("clientes").select("*").order("nombre"),
+      fetchTodo("clientes", "nombre", true),
       supabase.from("planes").select("*").order("precio"),
-      supabase.from("facturas").select("*").order("fecha_vencimiento", { ascending: true }),
-      supabase.from("movimientos").select("*").order("fecha", { ascending: false }),
+      fetchTodo("facturas", "fecha_vencimiento", true),
+      fetchTodo("movimientos", "fecha", false),
       supabase.from("historial_mensual").select("*").order("mes", { ascending: true }),
     ]);
     if (c.error || p.error || f.error || m.error || hm.error) {
@@ -363,7 +382,7 @@ export default function App() {
       return;
     }
     await generarFacturasDelCiclo(c.data || [], p.data || [], f.data || []);
-    const f2 = await supabase.from("facturas").select("*").order("fecha_vencimiento", { ascending: true });
+    const f2 = await fetchTodo("facturas", "fecha_vencimiento", true);
     setClientes(c.data || []);
     setPlanes(p.data || []);
     setFacturas(f2.data || f.data || []);
@@ -1517,11 +1536,37 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
     XLSX.writeFile(wb, `Reporte-ISP-Control-${fmtISO(hoy)}.xlsx`);
   };
 
-  // Ingresos cobrados por mes (últimos 6 meses, según fecha_vencimiento)
+  // Ingresos cobrados por mes: cubre todo el rango real de tus facturas pagadas (hasta 24 meses),
+  // o los últimos 6 meses si aún no tienes historial cargado.
+  const fechasPagadas = facturas
+    .filter((f) => f.estado === "pagada" && f.fecha_vencimiento)
+    .map((f) => f.fecha_vencimiento.slice(0, 7))
+    .sort();
   const meses = [];
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-    meses.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleDateString("es-MX", { month: "short" }) });
+  if (fechasPagadas.length > 0) {
+    const [anioMin, mesMin] = fechasPagadas[0].split("-").map(Number);
+    let cursor = new Date(anioMin, mesMin - 1, 1);
+    const limite = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    while (cursor <= limite && meses.length < 24) {
+      meses.push({
+        key: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+        label: cursor.toLocaleDateString("es-MX", { month: "short", year: "2-digit" }),
+      });
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    }
+    // si el historial es más largo de 24 meses, mostramos solo los últimos 24
+    if (meses.length === 24) {
+      const desde = new Date(hoy.getFullYear(), hoy.getMonth() - 23, 1);
+      meses.splice(0, meses.length, ...meses.filter((m) => {
+        const [y, mo] = m.key.split("-").map(Number);
+        return new Date(y, mo - 1, 1) >= desde;
+      }));
+    }
+  } else {
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+      meses.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleDateString("es-MX", { month: "short" }) });
+    }
   }
   const ingresosPorMes = meses.map((m) => {
     const total = facturas
@@ -1589,7 +1634,7 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
         ))}
       </div>
 
-      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>INGRESOS COBRADOS · ÚLTIMOS 6 MESES</h2>
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>INGRESOS COBRADOS POR MES</h2>
       <div className="rounded-xl p-4 mb-8" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, height: 260 }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={ingresosPorMes}>
