@@ -19,6 +19,7 @@ import {
   BarChart3,
   MapPin,
   Navigation,
+  MessageCircle,
 } from "lucide-react";
 import {
   BarChart,
@@ -42,6 +43,13 @@ const markerIcon = (color) =>
   });
 
 const DEFAULT_CENTER = [19.4517, -70.697]; // Santiago de los Caballeros, RD
+
+function whatsappLink(telefono, mensaje) {
+  const digits = (telefono || "").replace(/\D/g, "");
+  if (!digits) return null;
+  const conCodigo = digits.length === 10 ? `1${digits}` : digits;
+  return `https://wa.me/${conCodigo}?text=${encodeURIComponent(mensaje)}`;
+}
 
 const COLORS = {
   bg: "#10151A",
@@ -619,6 +627,10 @@ export default function App() {
               ) : (
                 facturas.slice().reverse().map((f) => {
                   const c = clientes.find((c) => c.id === f.cliente_id);
+                  const mensaje = c
+                    ? `Hola ${c.nombre}, te recordamos que tu factura de ${f.periodo || "tu servicio"} por ${money(f.monto)} ${f.fecha_vencimiento ? `vence el ${f.fecha_vencimiento}` : "está pendiente"}. ¡Gracias!`
+                    : "";
+                  const link = c ? whatsappLink(c.telefono, mensaje) : null;
                   return (
                     <div
                       key={f.id}
@@ -638,6 +650,17 @@ export default function App() {
                           <Button variant="ghost" onClick={() => markPaid(f.id)}>
                             Marcar pagada
                           </Button>
+                        )}
+                        {f.estado !== "pagada" && link && (
+                          <a
+                            href={link}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                            style={{ color: COLORS.active, border: `1px solid ${COLORS.active}40`, backgroundColor: COLORS.active + "1A" }}
+                          >
+                            <MessageCircle size={13} /> Recordar
+                          </a>
                         )}
                         <button onClick={() => deleteInvoice(f.id)} style={{ color: COLORS.dim }}>
                           <Trash2 size={15} />
