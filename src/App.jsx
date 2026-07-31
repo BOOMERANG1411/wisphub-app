@@ -1452,6 +1452,13 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
           style={{ backgroundColor: "#fff", color: "#000", padding: formato === "termica" ? "10px" : "24px", borderRadius: 8 }}
         >
           <div style={{ textAlign: "center", marginBottom: 8 }}>
+{EMPRESA.logoUrl && (
+  <img
+    src={EMPRESA.logoUrl}
+    alt="Logo"
+    style={{ maxWidth: formato === "termica" ? 80 : 120, margin: "0 auto 6px", display: "block" }}
+  />
+)}
             <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 14 : 20 }}>{EMPRESA.nombre}</div>
             <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555" }}>
               {EMPRESA.direccion}<br />
@@ -1489,8 +1496,8 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
 
           {cajeroNombre && (
             <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 6 }}>
-              <strong>Cajero:</strong> {cajeroNombre}
-            </div>
+  <strong>Facturado por:</strong> {cajeroNombre || "Administrador"}
+</div>
           )}
 
           <div style={{ textAlign: "center", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 10 }}>
