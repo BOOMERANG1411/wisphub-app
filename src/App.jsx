@@ -466,7 +466,17 @@ export default function App() {
 
   const importarClientes = async (filas, planesActualizados) => {
     const estadosValidos = ["activo", "moroso", "suspendido", "cancelado"];
-    const payload = filas.map((f) => {
+    const nombresExistentes = new Set(clientes.map((c) => c.nombre.toLowerCase().trim()));
+    let duplicados = 0;
+    const payload = filas.filter((f) => {
+      const clave = (f.nombre || "").toLowerCase().trim();
+      if (nombresExistentes.has(clave)) {
+        duplicados++;
+        return false;
+      }
+      nombresExistentes.add(clave); // evita duplicar también dentro del mismo archivo
+      return true;
+    }).map((f) => {
       const estadoNorm = (f.estado || "").toLowerCase().trim();
       const cicloTexto = String(f.ciclo || "");
       const cicloNum = cicloTexto.includes("30") ? 30 : cicloTexto.includes("15") ? 15 : 15;
@@ -493,6 +503,7 @@ export default function App() {
     else {
       setImportModal(false);
       loadAll();
+      if (duplicados > 0) setErrorMsg(`Importación completa. ${duplicados} cliente(s) ya existían (mismo nombre) y se omitieron.`);
     }
   };
 
