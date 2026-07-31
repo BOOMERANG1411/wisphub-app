@@ -124,6 +124,7 @@ const EMPRESA = {
   direccion: "Barrio Juan Bosch",
   telefono: "829-321-3372",
   email: "wifizona100@gmail.com",
+  logoUrl: "/logo.png",
 };
 
 const COLORS = {
