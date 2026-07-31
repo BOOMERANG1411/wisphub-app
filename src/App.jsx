@@ -266,6 +266,25 @@ function Button({ children, onClick, variant = "primary", type = "button", ...re
   );
 }
 
+function OrdenFlecha({ label, campo, valor, onChange }) {
+  const asc = valor === `${campo}_asc`;
+  const desc = valor === `${campo}_desc`;
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(asc ? `${campo}_desc` : `${campo}_asc`)}
+      className="inline-flex items-center gap-1 text-xs font-medium"
+      style={{ color: asc || desc ? COLORS.accent : COLORS.dim }}
+    >
+      {label}
+      <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: "8px", fontSize: 9 }}>
+        <span style={{ opacity: asc ? 1 : 0.3 }}>▲</span>
+        <span style={{ opacity: desc ? 1 : 0.3 }}>▼</span>
+      </span>
+    </button>
+  );
+}
+
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -339,6 +358,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [ordenCliente, setOrdenCliente] = useState("nombre_asc");
   const [ordenPlan, setOrdenPlan] = useState("nombre_asc");
+  const [ordenFactura, setOrdenFactura] = useState("");
+  const [ordenCaja, setOrdenCaja] = useState("");
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
@@ -1051,10 +1072,7 @@ export default function App() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <select style={{ ...inputStyle, maxWidth: 180 }} value={ordenCliente} onChange={(e) => setOrdenCliente(e.target.value)}>
-                <option value="nombre_asc">Nombre A-Z</option>
-                <option value="nombre_desc">Nombre Z-A</option>
-              </select>
+              <OrdenFlecha label="Nombre" campo="nombre" valor={ordenCliente} onChange={setOrdenCliente} />
             </div>
 
             {clienteFiltro !== "todos" && (
@@ -1138,13 +1156,9 @@ export default function App() {
                 <Plus size={16} /> Nuevo plan
               </Button>
             </div>
-            <div className="mb-4">
-              <select style={{ ...inputStyle, maxWidth: 200 }} value={ordenPlan} onChange={(e) => setOrdenPlan(e.target.value)}>
-                <option value="nombre_asc">Nombre A-Z</option>
-                <option value="nombre_desc">Nombre Z-A</option>
-                <option value="precio_asc">Precio: menor a mayor</option>
-                <option value="precio_desc">Precio: mayor a menor</option>
-              </select>
+            <div className="flex items-center gap-4 mb-4">
+              <OrdenFlecha label="Nombre" campo="nombre" valor={ordenPlan} onChange={setOrdenPlan} />
+              <OrdenFlecha label="Precio" campo="precio" valor={ordenPlan} onChange={setOrdenPlan} />
             </div>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {planes.slice().sort((a, b) => {
@@ -1220,6 +1234,12 @@ export default function App() {
                 </button>
               </div>
             )}
+            <div className="flex items-center gap-4 mb-3">
+              <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
+              <OrdenFlecha label="Cliente" campo="cliente" valor={ordenFactura} onChange={setOrdenFactura} />
+              <OrdenFlecha label="Monto" campo="monto" valor={ordenFactura} onChange={setOrdenFactura} />
+              <OrdenFlecha label="Vencimiento" campo="vencimiento" valor={ordenFactura} onChange={setOrdenFactura} />
+            </div>
             <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
               {(() => {
                 const facturasFiltradas = facturas
@@ -1231,6 +1251,19 @@ export default function App() {
                     const visual = estadoVisual(f, new Date());
                     if (facturaFiltro === "por_cobrar") return visual !== "pagada";
                     return visual === facturaFiltro;
+                  })
+                  .sort((a, b) => {
+                    if (!ordenFactura) return 0;
+                    if (ordenFactura === "cliente_asc" || ordenFactura === "cliente_desc") {
+                      const na = clientes.find((c) => c.id === a.cliente_id)?.nombre || "";
+                      const nb = clientes.find((c) => c.id === b.cliente_id)?.nombre || "";
+                      return ordenFactura === "cliente_asc" ? na.localeCompare(nb) : nb.localeCompare(na);
+                    }
+                    if (ordenFactura === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
+                    if (ordenFactura === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
+                    if (ordenFactura === "vencimiento_asc") return (a.fecha_vencimiento || "").localeCompare(b.fecha_vencimiento || "");
+                    if (ordenFactura === "vencimiento_desc") return (b.fecha_vencimiento || "").localeCompare(a.fecha_vencimiento || "");
+                    return 0;
                   });
                 if (facturasFiltradas.length === 0) {
                   return (
@@ -1327,6 +1360,8 @@ export default function App() {
             onNuevo={() => setMovimientoModal({})}
             onEditar={(m) => setMovimientoModal(m)}
             onEliminar={deleteMovimiento}
+            orden={ordenCaja}
+            onOrden={setOrdenCaja}
           />
         )}
         {tab === "puntos-pago" && esAdmin && (
@@ -1487,46 +1522,46 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
                 style={{ maxWidth: formato === "termica" ? 80 : 120, margin: "0 auto 6px", display: "block" }}
               />
             )}
-            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 16 : 22 }}>{EMPRESA.nombre}</div>
-            <div style={{ fontSize: formato === "termica" ? 11 : 13, color: "#555" }}>
+            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 20 : 24 }}>{EMPRESA.nombre}</div>
+            <div style={{ fontSize: formato === "termica" ? 14 : 15, color: "#555" }}>
               {EMPRESA.direccion}<br />
               {EMPRESA.telefono}{EMPRESA.email ? ` · ${EMPRESA.email}` : ""}
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 11 : 13, color: "#555", marginBottom: 6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 13 : 14, color: "#555", marginBottom: 6 }}>
             <span>Fecha: {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}</span>
             <span>Recibo N° {numeroRecibo}</span>
           </div>
 
-          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 13 : 15 }}>
+          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 16 : 17 }}>
             <div><strong>Cliente:</strong> {cliente?.nombre || "—"}</div>
             {cliente?.telefono && <div><strong>Teléfono:</strong> {cliente.telefono}</div>}
             <div><strong>Forma de pago:</strong> {FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—"}</div>
             <div><strong>Estado:</strong> {pagada ? "Pagada" : "Pendiente"}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 12 : 14, marginBottom: 8 }}>
+          <div style={{ fontSize: formato === "termica" ? 15 : 16, marginBottom: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 2 }}>Descripción</div>
             <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}</div>
             <div style={{ color: "#555" }}>Periodo: {factura.periodo || "—"}{factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 13 : 15, marginBottom: 4 }}>
+          <div style={{ fontSize: formato === "termica" ? 16 : 17, marginBottom: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(factura.monto)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Descuento:</span><span>{money(0)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{pagada ? money(factura.monto) : money(0)}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 15 : 18, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 19 : 20, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
               <span>Nuevo saldo pendiente:</span>
               <span>{pagada ? money(0) : money(factura.monto)}</span>
             </div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 11 : 13, color: "#555", marginTop: 6 }}>
+          <div style={{ fontSize: formato === "termica" ? 13 : 14, color: "#555", marginTop: 6 }}>
             <strong>Facturado por:</strong> {cajeroNombre || "Administrador"}
           </div>
 
-          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 11 : 13, color: "#555", marginTop: 10 }}>
+          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 13 : 14, color: "#555", marginTop: 10 }}>
             ¡Gracias por su preferencia!
           </div>
         </div>
@@ -1938,11 +1973,20 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
   );
 }
 
-function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
+function CajaTab({ movimientos, onNuevo, onEditar, onEliminar, orden, onOrden }) {
   const gastos = movimientos.filter((m) => m.tipo === "gasto");
   const ingresos = movimientos.filter((m) => m.tipo === "otro_ingreso");
   const totalGastos = gastos.reduce((s, m) => s + Number(m.monto || 0), 0);
   const totalIngresos = ingresos.reduce((s, m) => s + Number(m.monto || 0), 0);
+
+  const movimientosOrdenados = movimientos.slice().sort((a, b) => {
+    if (!orden) return 0;
+    if (orden === "fecha_asc") return (a.fecha || "").localeCompare(b.fecha || "");
+    if (orden === "fecha_desc") return (b.fecha || "").localeCompare(a.fecha || "");
+    if (orden === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
+    if (orden === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
+    return 0;
+  });
 
   return (
     <div>
@@ -1965,13 +2009,19 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar }) {
         </div>
       </div>
 
+      <div className="flex items-center gap-4 mb-3">
+        <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
+        <OrdenFlecha label="Fecha" campo="fecha" valor={orden} onChange={onOrden} />
+        <OrdenFlecha label="Monto" campo="monto" valor={orden} onChange={onOrden} />
+      </div>
+
       <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
-        {movimientos.length === 0 ? (
+        {movimientosOrdenados.length === 0 ? (
           <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
             Aún no has registrado gastos ni otros ingresos.
           </div>
         ) : (
-          movimientos.map((m) => (
+          movimientosOrdenados.map((m) => (
             <div key={m.id} className="flex items-center justify-between px-4 py-3" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
               <div>
                 <div className="text-sm font-medium">{m.descripcion}</div>
