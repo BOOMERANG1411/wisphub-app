@@ -337,6 +337,8 @@ export default function App() {
   const [facturaFiltro, setFacturaFiltro] = useState("todas");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [search, setSearch] = useState("");
+  const [ordenCliente, setOrdenCliente] = useState("nombre_asc");
+  const [ordenPlan, setOrdenPlan] = useState("nombre_asc");
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
@@ -466,17 +468,7 @@ export default function App() {
 
   const importarClientes = async (filas, planesActualizados) => {
     const estadosValidos = ["activo", "moroso", "suspendido", "cancelado"];
-    const nombresExistentes = new Set(clientes.map((c) => c.nombre.toLowerCase().trim()));
-    let duplicados = 0;
-    const payload = filas.filter((f) => {
-      const clave = (f.nombre || "").toLowerCase().trim();
-      if (nombresExistentes.has(clave)) {
-        duplicados++;
-        return false;
-      }
-      nombresExistentes.add(clave); // evita duplicar también dentro del mismo archivo
-      return true;
-    }).map((f) => {
+    const payload = filas.map((f) => {
       const estadoNorm = (f.estado || "").toLowerCase().trim();
       const cicloTexto = String(f.ciclo || "");
       const cicloNum = cicloTexto.includes("30") ? 30 : cicloTexto.includes("15") ? 15 : 15;
@@ -503,7 +495,6 @@ export default function App() {
     else {
       setImportModal(false);
       loadAll();
-      if (duplicados > 0) setErrorMsg(`Importación completa. ${duplicados} cliente(s) ya existían (mismo nombre) y se omitieron.`);
     }
   };
 
@@ -892,7 +883,13 @@ export default function App() {
 
   const filteredClients = clientes
     .filter((c) => (c.nombre || "").toLowerCase().includes(search.toLowerCase()))
-    .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro);
+    .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro)
+    .slice()
+    .sort((a, b) => {
+      if (ordenCliente === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
+      if (ordenCliente === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
+      return 0;
+    });
 
   const totalActivos = clientes.filter((c) => c.estado === "activo").length;
   const totalMorosos = clientes.filter((c) => c.estado === "moroso").length;
@@ -1044,14 +1041,20 @@ export default function App() {
               </div>
             </div>
 
-            <div className="relative mb-4 max-w-xs">
-              <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
-              <input
-                style={{ ...inputStyle, paddingLeft: 32 }}
-                placeholder="Buscar cliente…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="relative max-w-xs">
+                <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
+                <input
+                  style={{ ...inputStyle, paddingLeft: 32 }}
+                  placeholder="Buscar cliente…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <select style={{ ...inputStyle, maxWidth: 180 }} value={ordenCliente} onChange={(e) => setOrdenCliente(e.target.value)}>
+                <option value="nombre_asc">Nombre A-Z</option>
+                <option value="nombre_desc">Nombre Z-A</option>
+              </select>
             </div>
 
             {clienteFiltro !== "todos" && (
@@ -1129,14 +1132,28 @@ export default function App() {
 
         {tab === "planes" && (
           <div>
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center justify-between mb-3">
               <h1 className="font-display text-xl md:text-2xl font-semibold">Planes</h1>
               <Button onClick={() => setPlanModal({})}>
                 <Plus size={16} /> Nuevo plan
               </Button>
             </div>
+            <div className="mb-4">
+              <select style={{ ...inputStyle, maxWidth: 200 }} value={ordenPlan} onChange={(e) => setOrdenPlan(e.target.value)}>
+                <option value="nombre_asc">Nombre A-Z</option>
+                <option value="nombre_desc">Nombre Z-A</option>
+                <option value="precio_asc">Precio: menor a mayor</option>
+                <option value="precio_desc">Precio: mayor a menor</option>
+              </select>
+            </div>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {planes.map((p) => (
+              {planes.slice().sort((a, b) => {
+                if (ordenPlan === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
+                if (ordenPlan === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
+                if (ordenPlan === "precio_asc") return Number(a.precio || 0) - Number(b.precio || 0);
+                if (ordenPlan === "precio_desc") return Number(b.precio || 0) - Number(a.precio || 0);
+                return 0;
+              }).map((p) => (
                 <div
                   key={p.id}
                   className="rounded-xl p-4"
@@ -1463,55 +1480,53 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
           style={{ backgroundColor: "#fff", color: "#000", padding: formato === "termica" ? "10px" : "24px", borderRadius: 8 }}
         >
           <div style={{ textAlign: "center", marginBottom: 8 }}>
-{EMPRESA.logoUrl && (
-  <img
-    src={EMPRESA.logoUrl}
-    alt="Logo"
-    style={{ maxWidth: formato === "termica" ? 80 : 120, margin: "0 auto 6px", display: "block" }}
-  />
-)}
-            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 14 : 20 }}>{EMPRESA.nombre}</div>
-            <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555" }}>
+            {EMPRESA.logoUrl && (
+              <img
+                src={EMPRESA.logoUrl}
+                alt="Logo"
+                style={{ maxWidth: formato === "termica" ? 80 : 120, margin: "0 auto 6px", display: "block" }}
+              />
+            )}
+            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 16 : 22 }}>{EMPRESA.nombre}</div>
+            <div style={{ fontSize: formato === "termica" ? 11 : 13, color: "#555" }}>
               {EMPRESA.direccion}<br />
               {EMPRESA.telefono}{EMPRESA.email ? ` · ${EMPRESA.email}` : ""}
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginBottom: 6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 11 : 13, color: "#555", marginBottom: 6 }}>
             <span>Fecha: {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}</span>
             <span>Recibo N° {numeroRecibo}</span>
           </div>
 
-          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 11 : 13 }}>
+          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 13 : 15 }}>
             <div><strong>Cliente:</strong> {cliente?.nombre || "—"}</div>
             {cliente?.telefono && <div><strong>Teléfono:</strong> {cliente.telefono}</div>}
             <div><strong>Forma de pago:</strong> {FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—"}</div>
             <div><strong>Estado:</strong> {pagada ? "Pagada" : "Pendiente"}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 10 : 12, marginBottom: 8 }}>
+          <div style={{ fontSize: formato === "termica" ? 12 : 14, marginBottom: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 2 }}>Descripción</div>
             <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}</div>
             <div style={{ color: "#555" }}>Periodo: {factura.periodo || "—"}{factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 11 : 13, marginBottom: 4 }}>
+          <div style={{ fontSize: formato === "termica" ? 13 : 15, marginBottom: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(factura.monto)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Descuento:</span><span>{money(0)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{pagada ? money(factura.monto) : money(0)}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 13 : 16, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 15 : 18, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
               <span>Nuevo saldo pendiente:</span>
               <span>{pagada ? money(0) : money(factura.monto)}</span>
             </div>
           </div>
 
-          {cajeroNombre && (
-            <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 6 }}>
-  <strong>Facturado por:</strong> {cajeroNombre || "Administrador"}
-</div>
-          )}
+          <div style={{ fontSize: formato === "termica" ? 11 : 13, color: "#555", marginTop: 6 }}>
+            <strong>Facturado por:</strong> {cajeroNombre || "Administrador"}
+          </div>
 
-          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 10 }}>
+          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 11 : 13, color: "#555", marginTop: 10 }}>
             ¡Gracias por su preferencia!
           </div>
         </div>
