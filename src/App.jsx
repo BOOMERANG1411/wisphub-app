@@ -31,6 +31,7 @@ import {
   Printer,
   Receipt,
   DollarSign,
+  Settings,
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -119,7 +120,8 @@ function mensajeRecordatorio(cliente, factura) {
   return `Hola ${cliente.nombre}, te recordamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} vence el ${factura.fecha_vencimiento || ""}. Despues de esa fecha el servicio podria suspenderse. Recuerda: estar al dia antes de esa fecha te hace elegible para nuestro sorteo mensual del dia 4 (mes gratis o articulos). No estamos obligados a realizar sorteos, lo hacemos para incentivar el pago a tiempo, ya que asi cubrimos a tiempo nuestros compromisos con el servicio. Nuestro compromiso contigo es que el servicio contratado te siga llegando. Gracias por tu preferencia!`;
 }
 
-const EMPRESA = {
+// Valores por defecto si todavía no se ha guardado nada en la pestaña Configuración.
+const EMPRESA_DEFAULT = {
   nombre: "ZONA-WLAN",
   direccion: "Barrio Juan Bosch",
   telefono: "829-321-3372",
@@ -615,6 +617,31 @@ export default function App() {
     if (session && perfil && perfil.rol !== "cajero") cargarPuntosDePago();
   }, [session, perfil, cargarPuntosDePago]);
 
+  const [config, setConfig] = useState(null);
+
+  const cargarConfig = useCallback(async () => {
+    const { data } = await supabase.from("configuracion").select("*").eq("id", 1).maybeSingle();
+    setConfig(data || null);
+  }, []);
+
+  useEffect(() => {
+    if (session) cargarConfig();
+  }, [session, cargarConfig]);
+
+  const guardarConfig = async (nuevaConfig) => {
+    const { error } = await supabase.from("configuracion").upsert({ id: 1, ...nuevaConfig });
+    if (error) setErrorMsg(error.message);
+    else await cargarConfig();
+  };
+
+  const empresaActual = {
+    nombre: config?.nombre || EMPRESA_DEFAULT.nombre,
+    direccion: config?.direccion || EMPRESA_DEFAULT.direccion,
+    telefono: config?.telefono || EMPRESA_DEFAULT.telefono,
+    email: config?.email || EMPRESA_DEFAULT.email,
+    logoUrl: config?.logo_url || EMPRESA_DEFAULT.logoUrl,
+  };
+
   const guardarComision = async (userId, tipo, valor, nombre, permisos) => {
     const payload = { comision_tipo: tipo, comision_valor: valor, nombre };
     if (permisos) payload.permisos = permisos;
@@ -930,6 +957,7 @@ export default function App() {
     { id: "mapa", label: "Mapa", Icon: MapPin },
     { id: "caja", label: "Caja", Icon: Wallet },
     { id: "puntos-pago", label: "Puntos de pago", Icon: DollarSign },
+    { id: "configuracion", label: "Configuración", Icon: Settings },
   ];
   const NAV = esAdmin ? NAV_COMPLETO : NAV_COMPLETO.filter((n) => tienePermiso(n.id));
 
@@ -1374,6 +1402,9 @@ export default function App() {
             onCrear={crearPuntoDePago}
           />
         )}
+        {tab === "configuracion" && esAdmin && (
+          <ConfiguracionTab config={config} onGuardar={guardarConfig} />
+        )}
       </main>
 
       {clientModal && (
@@ -1461,6 +1492,9 @@ export default function App() {
           cliente={clientes.find((c) => c.id === reciboModal.cliente_id)}
           plan={planById(clientes.find((c) => c.id === reciboModal.cliente_id)?.plan_id)}
           cajeroNombre={nombreCajero(reciboModal.cobrado_por)}
+          empresa={empresaActual}
+          tamano={config?.tamano_recibo || "mediano"}
+          formatoDefault={config?.formato_recibo || "termica"}
           onClose={() => setReciboModal(null)}
         />
       )}
@@ -1474,11 +1508,14 @@ const FORMAS_PAGO = [
   { value: "saldo_favor", label: "Saldo a Favor" },
 ];
 
-function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
-  const [formato, setFormato] = useState("termica"); // "termica" o "carta"
+function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, formatoDefault, onClose }) {
+  const [formato, setFormato] = useState(formatoDefault || "termica"); // "termica" o "carta"
   const fecha = new Date();
   const pagada = factura.estado === "pagada";
   const numeroRecibo = String(factura.id).replace(/\D/g, "").slice(-5).padStart(5, "0") || String(factura.id).slice(-5);
+  const empresaMostrar = empresa || EMPRESA_DEFAULT;
+  const escala = tamano === "chico" ? 0.8 : tamano === "grande" ? 1.25 : 1;
+  const sz = (n) => Math.round(n * escala);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
@@ -1515,53 +1552,53 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
           style={{ backgroundColor: "#fff", color: "#000", padding: formato === "termica" ? "10px" : "24px", borderRadius: 8 }}
         >
           <div style={{ textAlign: "center", marginBottom: 8 }}>
-            {EMPRESA.logoUrl && (
+            {empresaMostrar.logoUrl && (
               <img
-                src={EMPRESA.logoUrl}
+                src={empresaMostrar.logoUrl}
                 alt="Logo"
-                style={{ maxWidth: formato === "termica" ? 80 : 120, margin: "0 auto 6px", display: "block" }}
+                style={{ maxWidth: sz(formato === "termica" ? 80 : 120), margin: "0 auto 6px", display: "block" }}
               />
             )}
-            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 20 : 24 }}>{EMPRESA.nombre}</div>
-            <div style={{ fontSize: formato === "termica" ? 14 : 15, color: "#555" }}>
-              {EMPRESA.direccion}<br />
-              {EMPRESA.telefono}{EMPRESA.email ? ` · ${EMPRESA.email}` : ""}
+            <div style={{ fontWeight: 700, fontSize: sz(formato === "termica" ? 20 : 24) }}>{empresaMostrar.nombre}</div>
+            <div style={{ fontSize: sz(formato === "termica" ? 14 : 15), color: "#555" }}>
+              {empresaMostrar.direccion}<br />
+              {empresaMostrar.telefono}{empresaMostrar.email ? ` · ${empresaMostrar.email}` : ""}
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 13 : 14, color: "#555", marginBottom: 6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: sz(formato === "termica" ? 13 : 14), color: "#555", marginBottom: 6 }}>
             <span>Fecha: {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}</span>
             <span>Recibo N° {numeroRecibo}</span>
           </div>
 
-          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 16 : 17 }}>
+          <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: sz(formato === "termica" ? 16 : 17) }}>
             <div><strong>Cliente:</strong> {cliente?.nombre || "—"}</div>
             {cliente?.telefono && <div><strong>Teléfono:</strong> {cliente.telefono}</div>}
             <div><strong>Forma de pago:</strong> {FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—"}</div>
             <div><strong>Estado:</strong> {pagada ? "Pagada" : "Pendiente"}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 15 : 16, marginBottom: 8 }}>
+          <div style={{ fontSize: sz(formato === "termica" ? 15 : 16), marginBottom: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 2 }}>Descripción</div>
             <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}</div>
             <div style={{ color: "#555" }}>Periodo: {factura.periodo || "—"}{factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}</div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 16 : 17, marginBottom: 4 }}>
+          <div style={{ fontSize: sz(formato === "termica" ? 16 : 17), marginBottom: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(factura.monto)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Descuento:</span><span>{money(0)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{pagada ? money(factura.monto) : money(0)}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 19 : 20, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: sz(formato === "termica" ? 19 : 20), marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
               <span>Nuevo saldo pendiente:</span>
               <span>{pagada ? money(0) : money(factura.monto)}</span>
             </div>
           </div>
 
-          <div style={{ fontSize: formato === "termica" ? 13 : 14, color: "#555", marginTop: 6 }}>
+          <div style={{ fontSize: sz(formato === "termica" ? 13 : 14), color: "#555", marginTop: 6 }}>
             <strong>Facturado por:</strong> {cajeroNombre || "Administrador"}
           </div>
 
-          <div style={{ textAlign: "center", fontSize: formato === "termica" ? 13 : 14, color: "#555", marginTop: 10 }}>
+          <div style={{ textAlign: "center", fontSize: sz(formato === "termica" ? 13 : 14), color: "#555", marginTop: 10 }}>
             ¡Gracias por su preferencia!
           </div>
         </div>
@@ -3290,6 +3327,82 @@ function ImportFacturasForm({ onCancel, onImport }) {
         </div>
       )}
     </Modal>
+  );
+}
+
+function ConfiguracionTab({ config, onGuardar }) {
+  const [form, setForm] = useState({
+    nombre: config?.nombre || EMPRESA_DEFAULT.nombre,
+    direccion: config?.direccion || EMPRESA_DEFAULT.direccion,
+    telefono: config?.telefono || EMPRESA_DEFAULT.telefono,
+    email: config?.email || EMPRESA_DEFAULT.email,
+    logo_url: config?.logo_url || EMPRESA_DEFAULT.logoUrl,
+    tamano_recibo: config?.tamano_recibo || "mediano",
+    formato_recibo: config?.formato_recibo || "termica",
+  });
+  const [guardando, setGuardando] = useState(false);
+  const [guardado, setGuardado] = useState(false);
+
+  const confirmar = async () => {
+    setGuardando(true);
+    setGuardado(false);
+    await onGuardar(form);
+    setGuardando(false);
+    setGuardado(true);
+    setTimeout(() => setGuardado(false), 2500);
+  };
+
+  return (
+    <div>
+      <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Configuración</h1>
+      <p className="text-sm mb-6" style={{ color: COLORS.dim }}>
+        Estos datos se usan en los recibos y en el resto de la app.
+      </p>
+
+      <div className="rounded-xl p-4 mb-6" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+        <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>DATOS DE LA EMPRESA</h2>
+        <Field label="Nombre de la empresa">
+          <input style={inputStyle} value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
+        </Field>
+        <Field label="Dirección">
+          <input style={inputStyle} value={form.direccion} onChange={(e) => setForm({ ...form, direccion: e.target.value })} />
+        </Field>
+        <Field label="Teléfono">
+          <input style={inputStyle} value={form.telefono} onChange={(e) => setForm({ ...form, telefono: e.target.value })} />
+        </Field>
+        <Field label="Correo">
+          <input style={inputStyle} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        </Field>
+        <Field label="Ruta o URL del logo (ej. /logo.png)">
+          <input style={inputStyle} value={form.logo_url} onChange={(e) => setForm({ ...form, logo_url: e.target.value })} />
+        </Field>
+        <p className="text-xs" style={{ color: COLORS.dim }}>
+          El archivo del logo debe seguir subido en tu repositorio (carpeta <code>public</code>); aquí solo cambias la ruta o el nombre del archivo que usa la app.
+        </p>
+      </div>
+
+      <div className="rounded-xl p-4 mb-6" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+        <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>RECIBO</h2>
+        <Field label="Tamaño de letra">
+          <select style={inputStyle} value={form.tamano_recibo} onChange={(e) => setForm({ ...form, tamano_recibo: e.target.value })}>
+            <option value="chico">Chico</option>
+            <option value="mediano">Mediano</option>
+            <option value="grande">Grande</option>
+          </select>
+        </Field>
+        <Field label="Formato que abre por defecto">
+          <select style={inputStyle} value={form.formato_recibo} onChange={(e) => setForm({ ...form, formato_recibo: e.target.value })}>
+            <option value="termica">Ticket térmico</option>
+            <option value="carta">Hoja / PDF</option>
+          </select>
+        </Field>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <Button onClick={confirmar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar cambios"}</Button>
+        {guardado && <span className="text-xs" style={{ color: COLORS.active }}>Guardado ✓</span>}
+      </div>
+    </div>
   );
 }
 
