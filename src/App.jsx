@@ -119,6 +119,13 @@ function mensajeRecordatorio(cliente, factura) {
   return `Hola ${cliente.nombre}, te recordamos que tu factura de ${factura.periodo || "tu servicio"} por ${money(factura.monto)} vence el ${factura.fecha_vencimiento || ""}. Despues de esa fecha el servicio podria suspenderse. Recuerda: estar al dia antes de esa fecha te hace elegible para nuestro sorteo mensual del dia 4 (mes gratis o articulos). No estamos obligados a realizar sorteos, lo hacemos para incentivar el pago a tiempo, ya que asi cubrimos a tiempo nuestros compromisos con el servicio. Nuestro compromiso contigo es que el servicio contratado te siga llegando. Gracias por tu preferencia!`;
 }
 
+const EMPRESA = {
+  nombre: "ZONA-WLAN",
+  direccion: "Barrio Juan Bosch",
+  telefono: "829-321-3372",
+  email: "wifizona100@gmail.com",
+};
+
 const COLORS = {
   bg: "#10151A",
   panel: "#171D23",
@@ -709,6 +716,13 @@ export default function App() {
     const { error } = await supabase.from("historial_mensual").delete().eq("mes", mes);
     if (error) setErrorMsg(error.message);
     else loadAll();
+  };
+
+  const nombreCajero = (userId) => {
+    if (!userId) return null;
+    if (userId === miUserId) return perfil?.nombre || session?.user?.email;
+    const p = puntosDePago.find((pp) => pp.user_id === userId);
+    return p?.nombre || null;
   };
 
   if (session === undefined) {
@@ -1381,6 +1395,8 @@ export default function App() {
         <ReciboModal
           factura={reciboModal}
           cliente={clientes.find((c) => c.id === reciboModal.cliente_id)}
+          plan={planById(clientes.find((c) => c.id === reciboModal.cliente_id)?.plan_id)}
+          cajeroNombre={nombreCajero(reciboModal.cobrado_por)}
           onClose={() => setReciboModal(null)}
         />
       )}
@@ -1394,9 +1410,11 @@ const FORMAS_PAGO = [
   { value: "saldo_favor", label: "Saldo a Favor" },
 ];
 
-function ReciboModal({ factura, cliente, onClose }) {
+function ReciboModal({ factura, cliente, plan, cajeroNombre, onClose }) {
   const [formato, setFormato] = useState("termica"); // "termica" o "carta"
   const fecha = new Date();
+  const pagada = factura.estado === "pagada";
+  const numeroRecibo = String(factura.id).replace(/\D/g, "").slice(-5).padStart(5, "0") || String(factura.id).slice(-5);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
@@ -1432,24 +1450,50 @@ function ReciboModal({ factura, cliente, onClose }) {
           className={formato === "termica" ? "recibo-termica" : "recibo-carta"}
           style={{ backgroundColor: "#fff", color: "#000", padding: formato === "termica" ? "10px" : "24px", borderRadius: 8 }}
         >
-          <div style={{ textAlign: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 15 : 20 }}>ISP-Control</div>
-            <div style={{ fontSize: formato === "termica" ? 10 : 12, color: "#555" }}>Recibo de pago</div>
+          <div style={{ textAlign: "center", marginBottom: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: formato === "termica" ? 14 : 20 }}>{EMPRESA.nombre}</div>
+            <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555" }}>
+              {EMPRESA.direccion}<br />
+              {EMPRESA.telefono}{EMPRESA.email ? ` · ${EMPRESA.email}` : ""}
+            </div>
           </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginBottom: 6 }}>
+            <span>Fecha: {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}</span>
+            <span>Recibo N° {numeroRecibo}</span>
+          </div>
+
           <div style={{ borderTop: "1px dashed #999", borderBottom: "1px dashed #999", padding: "8px 0", margin: "8px 0", fontSize: formato === "termica" ? 11 : 13 }}>
             <div><strong>Cliente:</strong> {cliente?.nombre || "—"}</div>
             {cliente?.telefono && <div><strong>Teléfono:</strong> {cliente.telefono}</div>}
-            <div><strong>Periodo:</strong> {factura.periodo}</div>
-            <div><strong>Vence:</strong> {factura.fecha_vencimiento || "—"}</div>
             <div><strong>Forma de pago:</strong> {FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—"}</div>
+            <div><strong>Estado:</strong> {pagada ? "Pagada" : "Pendiente"}</div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: formato === "termica" ? 14 : 18, fontWeight: 700, margin: "8px 0" }}>
-            <span>TOTAL</span>
-            <span>{money(factura.monto)}</span>
+
+          <div style={{ fontSize: formato === "termica" ? 10 : 12, marginBottom: 8 }}>
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>Descripción</div>
+            <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}</div>
+            <div style={{ color: "#555" }}>Periodo: {factura.periodo || "—"}{factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}</div>
           </div>
+
+          <div style={{ fontSize: formato === "termica" ? 11 : 13, marginBottom: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(factura.monto)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Descuento:</span><span>{money(0)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{pagada ? money(factura.monto) : money(0)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: formato === "termica" ? 13 : 16, marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
+              <span>Nuevo saldo pendiente:</span>
+              <span>{pagada ? money(0) : money(factura.monto)}</span>
+            </div>
+          </div>
+
+          {cajeroNombre && (
+            <div style={{ fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 6 }}>
+              <strong>Cajero:</strong> {cajeroNombre}
+            </div>
+          )}
+
           <div style={{ textAlign: "center", fontSize: formato === "termica" ? 9 : 11, color: "#555", marginTop: 10 }}>
-            {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}
-            <br />¡Gracias por su pago!
+            ¡Gracias por su preferencia!
           </div>
         </div>
 
