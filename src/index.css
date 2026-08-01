@@ -5,23 +5,49 @@
 body { font-family: 'Inter', sans-serif; margin: 0; }
 .font-display { font-family: 'Space Grotesk', sans-serif; }
 .font-mono { font-family: 'JetBrains Mono', monospace; }
+
 @media print {
-  body * {
-    visibility: hidden;
+  @page {
+    size: 80mm auto;
+    margin: 0;
   }
-  #recibo-imprimible, #recibo-imprimible * {
-    visibility: visible;
+
+  nav, main {
+    display: none !important;
   }
-  #recibo-imprimible {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    padding: 0 !important;
-    margin: 0 !important;
+
+  .no-print {
+    display: none !important;
   }
-  body, #root {
+
+  html, body {
     background: #fff !important;
-    color: #000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 80mm !important;
+  }
+
+  .recibo-overlay {
+    position: static !important;
+    background: #fff !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .recibo-card {
+    max-width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    padding: 0 !important;
+  }
+
+  #recibo-imprimible {
+    padding: 6px !important;
+    margin: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box;
   }
 }
