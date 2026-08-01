@@ -1557,9 +1557,9 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   const sz = (n) => Math.round(n * escala);
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
+    <div className="fixed inset-0 flex items-center justify-center p-4 recibo-overlay" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
       <div
-        className="w-full max-w-md rounded-xl p-5"
+        className="w-full max-w-md rounded-xl p-5 recibo-card"
         style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, maxHeight: "90vh", overflowY: "auto" }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -1595,7 +1595,7 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
               <img
                 src={empresaMostrar.logoUrl}
                 alt="Logo"
-                style={{ maxWidth: sz(formato === "termica" ? 80 : 120), margin: "0 auto 6px", display: "block" }}
+                style={{ maxWidth: sz(formato === "termica" ? 140 : 180), margin: "0 auto 8px", display: "block" }}
               />
             )}
             <div style={{ fontWeight: 700, fontSize: sz(formato === "termica" ? 20 : 24) }}>{empresaMostrar.nombre}</div>
