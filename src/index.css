@@ -7,9 +7,10 @@ body { font-family: 'Inter', sans-serif; margin: 0; }
 .font-mono { font-family: 'JetBrains Mono', monospace; }
 
 @media print {
-  @page {
-    margin: 0;
-  }
+ @page {
+  size: 80mm 200mm;
+  margin: 0;
+}
 
   nav, main {
     display: none !important;
