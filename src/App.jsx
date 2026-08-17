@@ -2562,10 +2562,14 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     setRows(results.data);
     const erroresDetectados = (results.errors || []).length;
     setFilasConError(erroresDetectados);
-    const auto = {};
+   const auto = {};
+    const usadas = new Set();
     CAMPOS_IMPORTABLES.forEach((c) => {
-      const match = cols.find((h) => h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0]));
-      if (match) auto[c.key] = match;
+      const match = cols.find((h) => !usadas.has(h) && (h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0])));
+      if (match) {
+        auto[c.key] = match;
+        usadas.add(match);
+      }
     });
     setMapping(auto);
   };
