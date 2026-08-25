@@ -3658,7 +3658,7 @@ function ConfiguracionTab({ config, onGuardar, session }) {
                   <div style={{ color: COLORS.text }}>{formatoFecha(b.creado)}</div>
                   <div style={{ color: COLORS.dim }}>{formatoTamano(b.tamano)}</div>
                 </div>
-                {b.url ? (
+                {b.url ? (<a
                   
                     href={b.url}
                     className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 font-medium"
