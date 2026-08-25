@@ -1439,9 +1439,7 @@ export default function App() {
   <ConfiguracionTab config={config} onGuardar={guardarConfig} session={session} />
 )}
 </main>
-      </main>
-
-      {clientModal && (
+ {clientModal && (
         <ClientForm
           initial={clientModal}
           planes={planes}
@@ -3504,7 +3502,7 @@ function ImportFacturasForm({ onCancel, onImport }) {
   );
 }
 
-function ConfiguracionTab({ config, onGuardar }) {
+function ConfiguracionTab({ config, onGuardar, session }) {
   const [form, setForm] = useState({
     nombre: config?.nombre || EMPRESA_DEFAULT.nombre,
     direccion: config?.direccion || EMPRESA_DEFAULT.direccion,
@@ -3516,7 +3514,6 @@ function ConfiguracionTab({ config, onGuardar }) {
   });
   const [guardando, setGuardando] = useState(false);
   const [guardado, setGuardado] = useState(false);
-
   const confirmar = async () => {
     setGuardando(true);
     setGuardado(false);
@@ -3526,13 +3523,68 @@ function ConfiguracionTab({ config, onGuardar }) {
     setTimeout(() => setGuardado(false), 2500);
   };
 
+  /* ----- Respaldos ----- */
+  const [backups, setBackups] = useState([]);
+  const [cargandoBackups, setCargandoBackups] = useState(true);
+  const [generando, setGenerando] = useState(false);
+  const [errorBackup, setErrorBackup] = useState("");
+
+  const cargarBackups = useCallback(async () => {
+    setCargandoBackups(true);
+    try {
+      const resp = await fetch("/api/backup-list", {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "No se pudo cargar la lista de backups.");
+      setBackups(data.backups || []);
+    } catch (err) {
+      setErrorBackup(err.message);
+    } finally {
+      setCargandoBackups(false);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    cargarBackups();
+  }, [cargarBackups]);
+
+  const generarBackup = async () => {
+    setGenerando(true);
+    setErrorBackup("");
+    try {
+      const resp = await fetch("/api/backup-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ authToken: session?.access_token }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "No se pudo generar el backup.");
+      await cargarBackups();
+    } catch (err) {
+      setErrorBackup(err.message);
+    } finally {
+      setGenerando(false);
+    }
+  };
+
+  const formatoTamano = (bytes) => {
+    if (!bytes) return "—";
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(0)} KB`;
+    return `${(kb / 1024).toFixed(1)} MB`;
+  };
+  const formatoFecha = (iso) => {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
+  };
+
   return (
     <div>
       <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Configuración</h1>
       <p className="text-sm mb-6" style={{ color: COLORS.dim }}>
         Estos datos se usan en los recibos y en el resto de la app.
       </p>
-
       <div className="rounded-xl p-4 mb-6" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
         <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>DATOS DE LA EMPRESA</h2>
         <Field label="Nombre de la empresa">
@@ -3554,7 +3606,6 @@ function ConfiguracionTab({ config, onGuardar }) {
           El archivo del logo debe seguir subido en tu repositorio (carpeta <code>public</code>); aquí solo cambias la ruta o el nombre del archivo que usa la app.
         </p>
       </div>
-
       <div className="rounded-xl p-4 mb-6" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
         <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>RECIBO</h2>
         <Field label="Tamaño de letra">
@@ -3572,6 +3623,58 @@ function ConfiguracionTab({ config, onGuardar }) {
         </Field>
       </div>
 
+      <div className="rounded-xl p-4 mb-6" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display text-sm font-semibold" style={{ color: COLORS.dim }}>RESPALDOS</h2>
+          <Button variant="ghost" onClick={generarBackup} disabled={generando}>
+            {generando ? "Generando…" : "Generar backup ahora"}
+          </Button>
+        </div>
+        <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+          Todos los días se genera un respaldo automático de clientes, planes, facturas, caja y configuración.
+          Se conservan los últimos 30 días. Podés generar uno extra antes de una importación grande.
+        </p>
+        {errorBackup && (
+          <div
+            className="mb-3 rounded-lg px-3 py-2 text-xs"
+            style={{ backgroundColor: COLORS.danger + "1A", color: COLORS.danger, border: `1px solid ${COLORS.danger}40` }}
+          >
+            {errorBackup}
+          </div>
+        )}
+        {cargandoBackups ? (
+          <p className="text-xs" style={{ color: COLORS.dim }}>Cargando…</p>
+        ) : backups.length === 0 ? (
+          <p className="text-xs" style={{ color: COLORS.dim }}>Todavía no hay backups generados.</p>
+        ) : (
+          <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+            {backups.map((b) => (
+              <div
+                key={b.nombre}
+                className="flex items-center justify-between px-3 py-2 text-xs"
+                style={{ borderTop: `1px solid ${COLORS.border}` }}
+              >
+                <div>
+                  <div style={{ color: COLORS.text }}>{formatoFecha(b.creado)}</div>
+                  <div style={{ color: COLORS.dim }}>{formatoTamano(b.tamano)}</div>
+                </div>
+                {b.url ? (
+                  
+                    href={b.url}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 font-medium"
+                    style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
+                  >
+                    <Download size={13} /> Descargar
+                  </a>
+                ) : (
+                  <span style={{ color: COLORS.dim }}>Enlace no disponible</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="flex items-center gap-3">
         <Button onClick={confirmar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar cambios"}</Button>
         {guardado && <span className="text-xs" style={{ color: COLORS.active }}>Guardado ✓</span>}
@@ -3579,7 +3682,6 @@ function ConfiguracionTab({ config, onGuardar }) {
     </div>
   );
 }
-
 function ClientForm({ initial, planes, onCancel, onSave }) {
   const [form, setForm] = useState({
     id: initial.id,
