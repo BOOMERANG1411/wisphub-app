@@ -1435,7 +1435,10 @@ export default function App() {
             onCrear={crearPuntoDePago}
           />
         )}
-        {tab === "configuracion" && esAdmin && (
+       {tab === "configuracion" && esAdmin && (
+  <ConfiguracionTab config={config} onGuardar={guardarConfig} session={session} />
+)}
+</main>
       </main>
 
       {clientModal && (
