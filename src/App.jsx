@@ -1436,8 +1436,6 @@ export default function App() {
           />
         )}
         {tab === "configuracion" && esAdmin && (
-          <ConfiguracionTab config={config} onGuardar={guardarConfig} />
-        )}
       </main>
 
       {clientModal && (
