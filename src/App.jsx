@@ -74,6 +74,8 @@ function whatsappLink(telefono, mensaje) {
 
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 const fmtISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Mes (YYYY-MM) en que entró el dinero: fecha real de pago si existe; si no, el vencimiento.
+const mesDePago = (f) => (f.fecha_pago ? fmtISO(new Date(f.fecha_pago)).slice(0, 7) : (f.fecha_vencimiento || "").slice(0, 7));
 const ultimoDiaMes = (year, month) => new Date(year, month + 1, 0).getDate();
 
 // Convierte "28/07/2026 11:15" o "28/07/2026" a "2026-07-28". Si no coincide el patrón, lo deja igual.
@@ -486,6 +488,7 @@ export default function App() {
   const [importPlanesModal, setImportPlanesModal] = useState(false);
   const [importHistorialModal, setImportHistorialModal] = useState(false);
   const [reciboModal, setReciboModal] = useState(null);
+  const [migracionModal, setMigracionModal] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -1529,14 +1532,8 @@ export default function App() {
                 </div>
                 {!esCajero && (
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="ghost" onClick={() => setImportModal(true)}>
-                      <Upload size={16} /> Importar Excel/CSV
-                    </Button>
-                    <Button variant="ghost" onClick={() => setImportTelefonosModal(true)}>
-                      <Upload size={16} /> Sincronizar teléfonos
-                    </Button>
-                    <Button variant="ghost" onClick={() => setImportPlanesModal(true)}>
-                      <Upload size={16} /> Sincronizar planes
+                    <Button variant="ghost" onClick={() => setMigracionModal(true)}>
+                      <Upload size={16} /> Importar de WispHub
                     </Button>
                     <Button onClick={() => setClientModal({})}>
                       <Plus size={16} /> Nuevo cliente
@@ -1661,7 +1658,7 @@ export default function App() {
                                 <td className="px-3 py-2.5">
                                   <span className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap">
                                     <span style={{ width: 7, height: 7, borderRadius: 9, backgroundColor: colorEstado }} />
-                                    {c.pppoe_usuario || "—"}
+                                    {(c.pppoe_usuario || "—").split("@")[0]}
                                   </span>
                                 </td>
                                 <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{c.ip_asignada || "—"}</td>
@@ -1839,14 +1836,8 @@ export default function App() {
                 <div className="flex flex-wrap gap-2">
                   {!esCajero && (
                     <>
-                      <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
-                        <Upload size={16} /> Importar historial
-                      </Button>
-                      <Button variant="ghost" onClick={() => setImportPagosModal(true)}>
-                        <Wallet size={16} /> Reconciliar pagos
-                      </Button>
-                      <Button variant="ghost" onClick={() => setImportHistorialModal(true)}>
-                        <Download size={16} /> Historial de ingresos
+                      <Button variant="ghost" onClick={() => setMigracionModal(true)}>
+                        <Upload size={16} /> Importar de WispHub
                       </Button>
                       <Button onClick={() => setInvoiceModal({})}>
                         <Plus size={16} /> Nueva factura
@@ -1925,7 +1916,7 @@ export default function App() {
                         <div>
                           <div className="text-sm font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
                           <div className="text-xs" style={{ color: COLORS.dim }}>
-                            Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
+                            {f.numero_wisphub ? `#${f.numero_wisphub} · ` : ""}Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
                             {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
                           </div>
                         </div>
@@ -2148,6 +2139,720 @@ export default function App() {
           onClose={() => setReciboModal(null)}
         />
       )}
+      {migracionModal && (
+        <MigracionWispHub
+          clientes={clientes}
+          facturas={facturas}
+          planes={planes}
+          ensurePlanes={ensurePlanes}
+          session={session}
+          onClose={() => setMigracionModal(false)}
+          onTerminado={loadAll}
+        />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MIGRACIÓN DESDE WISPHUB
+   Lee el export completo de clientes y uno o varios exports de facturas.
+   Cada cliente se identifica por su Usuario PPPoE y cada factura por su
+   número de WispHub, así que subir archivos repetidos o periodos que se
+   pisan nunca duplica nada: lo repetido se ignora y lo que cambió se actualiza.
+   ===================================================================== */
+
+const SQL_WISPHUB = `alter table clientes add column if not exists wisphub_usuario text;
+alter table clientes add column if not exists fecha_cancelacion date;
+alter table clientes add column if not exists comentarios text;
+create unique index if not exists clientes_wisphub_usuario_key on clientes (wisphub_usuario);
+
+alter table facturas add column if not exists numero_wisphub integer;
+alter table facturas add column if not exists fecha_pago timestamptz;
+alter table facturas add column if not exists fecha_emision date;
+alter table facturas add column if not exists cajero text;
+create unique index if not exists facturas_numero_wisphub_key on facturas (numero_wisphub);`;
+
+const normKey = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const txtWH = (v) => (v instanceof Date ? fmtISO(v) : String(v ?? "")).trim();
+const numWH = (v) => (typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")) || 0);
+const p2 = (n) => String(n).padStart(2, "0");
+
+// "08/10/2026 16:15" -> { fecha: "2026-10-08", hora: "16:15" }. "0/0/0" o vacío -> null.
+function fechaWH(v) {
+  if (v instanceof Date && !isNaN(v)) return { fecha: fmtISO(v), hora: `${p2(v.getHours())}:${p2(v.getMinutes())}` };
+  const s = txtWH(v);
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (m) return { fecha: `${m[3]}-${p2(m[2])}-${p2(m[1])}`, hora: m[4] ? `${p2(m[4])}:${m[5]}` : null };
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (m) return { fecha: `${m[1]}-${m[2]}-${m[3]}`, hora: m[4] ? `${m[4]}:${m[5]}` : null };
+  return null;
+}
+
+// "3, $2700.00" -> { n: 3, monto: 2700 }
+function conteoWH(v) {
+  const m = txtWH(v).match(/^(\d+)\s*,\s*\$?\s*([\d,.\-]+)/);
+  return m ? { n: parseInt(m[1], 10), monto: numWH(m[2].replace(/,/g, "")) } : null;
+}
+
+function formaPagoWH(v) {
+  const n = normKey(v);
+  if (!n) return "efectivo";
+  if (n.includes("transf")) return "transferencia";
+  if (n.includes("saldo")) return "saldo_favor";
+  return "efectivo";
+}
+
+function leerArchivoWH(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array", cellDates: true, codepage: 65001 });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const matriz = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
+        const hi = matriz.slice(0, 15).findIndex((r) => r.some((c) => ["#factura", "nombre"].includes(normKey(c))));
+        if (hi < 0) {
+          resolve({ nombre: file.name, tipo: null, filas: [], error: "No encontré los encabezados de WispHub en este archivo." });
+          return;
+        }
+        const headers = matriz[hi].map(normKey);
+        const filas = matriz
+          .slice(hi + 1)
+          .filter((r) => r.some((c) => txtWH(c) !== ""))
+          .map((r) => {
+            const o = {};
+            headers.forEach((h, i) => { if (h) o[h] = r[i]; });
+            return o;
+          });
+        let tipo = null;
+        let error = "";
+        if (headers.includes("#factura")) tipo = "facturas";
+        else if (headers.includes("nombre") && headers.includes("servicio")) {
+          if (headers.includes("usuario")) tipo = "clientes";
+          else error = "Este es el export corto de clientes. Usa el completo, el que trae la columna Usuario.";
+        } else error = "No reconozco este archivo como clientes ni facturas de WispHub.";
+        resolve({ nombre: file.name, tipo, filas, error });
+      } catch (err) {
+        resolve({ nombre: file.name, tipo: null, filas: [], error: "No se pudo leer el archivo." });
+      }
+    };
+    reader.onerror = () => resolve({ nombre: file.name, tipo: null, filas: [], error: "No se pudo leer el archivo." });
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+const CAMPOS_CLIENTE_WH = [
+  "nombre", "telefono", "direccion", "estado", "ciclo", "pppoe_usuario", "pppoe_secret",
+  "ip_asignada", "fecha_instalacion", "fecha_cancelacion", "comentarios", "lat", "lng",
+];
+
+function analizarWH(archivos, clientesDB, facturasDB, planesDB) {
+  const avisos = [];
+
+  /* ----- Facturas (primero, porque traen dirección y teléfono extra) ----- */
+  const facMap = new Map();
+  const extra = new Map();
+  let facFilas = 0, facRepetidas = 0, anuladas = 0, sinNumero = 0;
+  archivos.filter((a) => a.tipo === "facturas").forEach((a) =>
+    a.filas.forEach((r) => {
+      facFilas++;
+      const numero = parseInt(txtWH(r["#factura"]).replace(/\D/g, ""), 10);
+      if (!numero) { sinNumero++; return; }
+      const est = normKey(r["estado"]);
+      if (est.startsWith("cancelad") || est.startsWith("anulad")) { anuladas++; return; }
+      const pagada = est.startsWith("pagad");
+      const usuario = txtWH(r["usuario"]).toLowerCase();
+      const venc = fechaWH(r["fecha vencimiento"]);
+      const emis = fechaWH(r["fecha emision"]);
+      // Las pendientes traen como "Fecha Pago" el día del export: se ignora.
+      const pago = pagada ? fechaWH(r["fecha pago"]) : null;
+      const cobrado = r["total cobrado"];
+      const [vy, vm] = venc ? venc.fecha.split("-").map(Number) : [0, 0];
+      const f = {
+        numero_wisphub: numero,
+        usuario,
+        estado: pagada ? "pagada" : "pendiente",
+        // WispHub suma sus pagos con "Total Cobrado" (lo que entró a caja); la deuda con "Total".
+        monto: pagada ? (txtWH(cobrado) !== "" ? numWH(cobrado) : numWH(r["total"])) : numWH(r["total"]),
+        fecha_vencimiento: venc ? venc.fecha : null,
+        fecha_emision: emis ? emis.fecha : null,
+        fecha_pago: pago ? `${pago.fecha}T${pago.hora || "12:00"}:00-04:00` : null,
+        forma_pago: pagada ? formaPagoWH(r["forma de pago"]) : null,
+        cajero: txtWH(r["cajero"]) || null,
+        periodo: venc ? `${MESES[vm - 1]} ${vy}` : "",
+      };
+      const prev = facMap.get(numero);
+      if (prev) {
+        facRepetidas++;
+        if (prev.estado === "pagada" && f.estado !== "pagada") return; // nos quedamos con la versión pagada
+      }
+      facMap.set(numero, f);
+      const dir = txtWH(r["direccion"]);
+      const tel = txtWH(r["telefono"]).replace(/\D/g, "");
+      if (usuario && (dir || tel)) {
+        const e = extra.get(usuario) || {};
+        extra.set(usuario, { direccion: dir || e.direccion, telefono: tel || e.telefono });
+      }
+    })
+  );
+
+  /* ----- Clientes ----- */
+  const cliMap = new Map();
+  const control = new Map();
+  let cliFilas = 0, cliRepetidos = 0, telRaros = 0, sinCoords = 0;
+  archivos.filter((a) => a.tipo === "clientes").forEach((a) =>
+    a.filas.forEach((r) => {
+      const usuario = txtWH(r["usuario"]);
+      if (!usuario) return;
+      cliFilas++;
+      const key = usuario.toLowerCase();
+      if (cliMap.has(key)) cliRepetidos++;
+      const coords = txtWH(r["coordenadas"]).split(",").map((s) => parseFloat(s));
+      const tieneCoords = coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1]);
+      const ex = extra.get(key) || {};
+      const tel = txtWH(r["telefono"]).replace(/\D/g, "") || ex.telefono || "";
+      if (tel && tel.length !== 10 && tel.length !== 11) telRaros++;
+      if (!tieneCoords) sinCoords++;
+      const inst = fechaWH(r["fecha instalacion"]);
+      const canc = fechaWH(r["fecha cancelacion"]);
+      const est = normKey(r["estado"]);
+      const barrio = txtWH(r["barrio/localidad"]);
+      cliMap.set(key, {
+        wisphub_usuario: key,
+        nombre: txtWH(r["nombre"]),
+        telefono: tel || null,
+        direccion: [ex.direccion, barrio].filter(Boolean).join(", ") || null,
+        estado: ["activo", "suspendido", "cancelado", "moroso"].includes(est) ? est : "activo",
+        ciclo: /\b15\b/.test(`${txtWH(r["router"])} ${txtWH(r["zona"])}`) ? 15 : 30,
+        plan_nombre: txtWH(r["plan internet"]),
+        plan_precio: numWH(r["plan precio"]),
+        pppoe_usuario: usuario,
+        pppoe_secret: txtWH(r["password hotspot/pppoe"]) || null,
+        ip_asignada: txtWH(r["ip"]) || null,
+        fecha_instalacion: inst ? inst.fecha : null,
+        fecha_cancelacion: canc ? canc.fecha : null,
+        comentarios: txtWH(r["comentarios"]) || null,
+        lat: tieneCoords ? coords[0] : null,
+        lng: tieneCoords ? coords[1] : null,
+      });
+      const pr = conteoWH(r["pagos realizados"]);
+      const pp = conteoWH(r["pagos pendientes"]);
+      if (pr || pp) {
+        control.set(key, { nombre: txtWH(r["nombre"]), pagN: pr?.n || 0, pagM: pr?.monto || 0, penN: pp?.n || 0, penM: pp?.monto || 0 });
+      }
+    })
+  );
+
+  const planNombreDe = (id) => planesDB.find((p) => p.id === id)?.nombre || "";
+  const dbCli = new Map(clientesDB.filter((c) => c.wisphub_usuario).map((c) => [c.wisphub_usuario, c]));
+  let cliNuevos = 0, cliCambian = 0, cliIguales = 0;
+  cliMap.forEach((c, k) => {
+    const d = dbCli.get(k);
+    if (!d) { c._accion = "nuevo"; cliNuevos++; return; }
+    const cambia =
+      CAMPOS_CLIENTE_WH.some((campo) => String(d[campo] ?? "") !== String(c[campo] ?? "")) ||
+      normKey(planNombreDe(d.plan_id)) !== normKey(c.plan_nombre);
+    c._accion = cambia ? "cambia" : "igual";
+    if (cambia) cliCambian++; else cliIguales++;
+  });
+
+  const planesNuevos = [];
+  const vistos = new Set(planesDB.map((p) => normKey(p.nombre)));
+  cliMap.forEach((c) => {
+    const k = normKey(c.plan_nombre);
+    if (c.plan_nombre && !vistos.has(k)) { vistos.add(k); planesNuevos.push({ nombre: c.plan_nombre, precio: c.plan_precio }); }
+  });
+
+  /* ----- Facturas contra la base ----- */
+  const dbFac = new Map(facturasDB.filter((f) => f.numero_wisphub).map((f) => [Number(f.numero_wisphub), f]));
+  const conocidos = new Set([...cliMap.keys(), ...dbCli.keys()]);
+  const tiempo = (x) => (x ? new Date(x).getTime() : 0);
+  let facNuevas = 0, facCambian = 0, facIguales = 0;
+  const sinCliente = new Map();
+  facMap.forEach((f, n) => {
+    if (!conocidos.has(f.usuario)) {
+      f._accion = "sin_cliente";
+      sinCliente.set(f.usuario, (sinCliente.get(f.usuario) || 0) + 1);
+      return;
+    }
+    const d = dbFac.get(n);
+    if (!d) { f._accion = "nueva"; facNuevas++; return; }
+    const cambia =
+      d.estado !== f.estado ||
+      Math.abs(Number(d.monto) - f.monto) > 0.001 ||
+      tiempo(d.fecha_pago) !== tiempo(f.fecha_pago) ||
+      (d.forma_pago || null) !== (f.forma_pago || null) ||
+      (d.fecha_vencimiento || null) !== f.fecha_vencimiento;
+    f._accion = cambia ? "cambia" : "igual";
+    if (cambia) facCambian++; else facIguales++;
+  });
+
+  /* ----- Prueba de control: lo que quedaría guardado vs lo que dice WispHub ----- */
+  const usuarioDeId = new Map(clientesDB.map((c) => [c.id, c.wisphub_usuario]));
+  const final = new Map();
+  dbFac.forEach((f, n) => final.set(n, { usuario: usuarioDeId.get(f.cliente_id), estado: f.estado, monto: Number(f.monto) }));
+  facMap.forEach((f, n) => { if (f._accion !== "sin_cliente") final.set(n, { usuario: f.usuario, estado: f.estado, monto: f.monto }); });
+  const porUsuario = new Map();
+  final.forEach((f) => {
+    if (!f.usuario) return;
+    const a = porUsuario.get(f.usuario) || { pagN: 0, pagM: 0, penN: 0, penM: 0 };
+    if (f.estado === "pagada") { a.pagN++; a.pagM += f.monto; } else { a.penN++; a.penM += f.monto; }
+    porUsuario.set(f.usuario, a);
+  });
+  let controlRes = null;
+  if (control.size > 0) {
+    const t = { whPagN: 0, whPagM: 0, whPenN: 0, whPenM: 0, apPagN: 0, apPagM: 0, apPenN: 0, apPenM: 0 };
+    const diferencias = [];
+    control.forEach((w, u) => {
+      const ap = porUsuario.get(u) || { pagN: 0, pagM: 0, penN: 0, penM: 0 };
+      t.whPagN += w.pagN; t.whPagM += w.pagM; t.whPenN += w.penN; t.whPenM += w.penM;
+      t.apPagN += ap.pagN; t.apPagM += ap.pagM; t.apPenN += ap.penN; t.apPenM += ap.penM;
+      if (w.pagN !== ap.pagN || Math.abs(w.pagM - ap.pagM) > 0.01 || w.penN !== ap.penN || Math.abs(w.penM - ap.penM) > 0.01) {
+        diferencias.push({ nombre: w.nombre, w, ap });
+      }
+    });
+    controlRes = { t, diferencias };
+  }
+
+  if (sinNumero) avisos.push(`${sinNumero} filas de facturas sin número se ignoraron.`);
+  if (telRaros) avisos.push(`${telRaros} teléfonos tienen dígitos de más o de menos. Puedes corregirlos después en cada cliente.`);
+  if (sinCoords) avisos.push(`${sinCoords} clientes no tienen coordenadas y no saldrán en el mapa.`);
+  if (sinCliente.size) {
+    avisos.push(`${[...sinCliente.values()].reduce((s, n) => s + n, 0)} facturas son de ${sinCliente.size} usuarios que no están en tus clientes y no se importarán. Incluye el export de clientes junto con estas facturas.`);
+  }
+
+  return {
+    cliMap, facMap, planesNuevos, controlRes, avisos,
+    cliFilas, cliRepetidos, cliNuevos, cliCambian, cliIguales,
+    facFilas, facRepetidas, anuladas, facNuevas, facCambian, facIguales,
+  };
+}
+
+async function traerTodoWH(tabla, columnas) {
+  let todos = [];
+  for (let desde = 0; ; desde += 1000) {
+    const { data, error } = await supabase.from(tabla).select(columnas).range(desde, desde + 999);
+    if (error) throw new Error(error.message);
+    todos = todos.concat(data || []);
+    if (!data || data.length < 1000) break;
+  }
+  return todos;
+}
+
+async function enLotesWH(filas, tam, fn) {
+  for (let i = 0; i < filas.length; i += tam) await fn(filas.slice(i, i + tam), i);
+}
+
+function FilaResumenWH({ titulo, partes }) {
+  return (
+    <div className="px-4 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+      <div className="text-sm font-medium mb-1">{titulo}</div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        {partes.filter((p) => p.valor > 0 || p.siempre).map((p) => (
+          <span key={p.label} style={{ color: p.color || COLORS.dim }}>
+            <span className="font-mono font-semibold">{p.valor}</span> {p.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ControlWH({ control }) {
+  if (!control) {
+    return (
+      <p className="text-xs" style={{ color: COLORS.dim }}>
+        Sube también el export completo de clientes para comprobar los totales contra WispHub.
+      </p>
+    );
+  }
+  const { t, diferencias } = control;
+  const filas = [
+    { label: "Pagos", whN: t.whPagN, whM: t.whPagM, apN: t.apPagN, apM: t.apPagM },
+    { label: "Pendientes", whN: t.whPenN, whM: t.whPenM, apN: t.apPenN, apM: t.apPenM },
+  ];
+  return (
+    <div>
+      <div className="rounded-lg overflow-hidden mb-2" style={{ border: `1px solid ${COLORS.border}` }}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr style={{ color: COLORS.dim, backgroundColor: COLORS.panel2 }}>
+              <th className="text-left px-3 py-2 font-medium"></th>
+              <th className="text-right px-3 py-2 font-medium">Según WispHub</th>
+              <th className="text-right px-3 py-2 font-medium">Quedará en la app</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {filas.map((f) => {
+              const ok = f.whN === f.apN && Math.abs(f.whM - f.apM) < 0.01;
+              return (
+                <tr key={f.label} style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                  <td className="px-3 py-2 font-sans">{f.label}</td>
+                  <td className="px-3 py-2 text-right">{f.whN} · {money(f.whM)}</td>
+                  <td className="px-3 py-2 text-right">{f.apN} · {money(f.apM)}</td>
+                  <td className="px-3 py-2 text-center">
+                    {ok ? <CheckCircle2 size={15} color={COLORS.active} /> : <AlertTriangle size={15} color={COLORS.warn} />}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {diferencias.length === 0 ? (
+        <p className="text-xs" style={{ color: COLORS.active }}>Todo cuadra cliente por cliente con WispHub.</p>
+      ) : (
+        <div>
+          <p className="text-xs mb-1" style={{ color: COLORS.warn }}>
+            {diferencias.length} clientes no cuadran. Lo normal es que falte algún periodo de facturas por subir.
+          </p>
+          <div className="rounded-lg overflow-y-auto text-xs" style={{ border: `1px solid ${COLORS.border}`, maxHeight: 160 }}>
+            {diferencias.slice(0, 50).map((d) => (
+              <div key={d.nombre} className="flex justify-between gap-2 px-3 py-1.5" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                <span className="truncate">{d.nombre}</span>
+                <span className="font-mono shrink-0" style={{ color: COLORS.dim }}>
+                  pagos {d.ap.pagN}/{d.w.pagN}, pend. {d.ap.penN}/{d.w.penN}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, onClose, onTerminado }) {
+  const [listo, setListo] = useState(null);
+  const [archivos, setArchivos] = useState([]);
+  const [leyendo, setLeyendo] = useState(false);
+  const [fase, setFase] = useState("elegir"); // elegir | importando | listo
+  const [progreso, setProgreso] = useState("");
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [hacerBackup, setHacerBackup] = useState(true);
+  const [copiado, setCopiado] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const a = await supabase.from("clientes").select("wisphub_usuario,fecha_cancelacion,comentarios").limit(1);
+      const b = await supabase.from("facturas").select("numero_wisphub,fecha_pago,fecha_emision,cajero").limit(1);
+      setListo(!a.error && !b.error);
+    })();
+  }, []);
+
+  const validos = archivos.filter((a) => a.tipo);
+  const analisis = validos.length > 0 ? analizarWH(validos, clientes, facturas, planes) : null;
+
+  const agregarArchivos = async (e) => {
+    const lista = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!lista.length) return;
+    setLeyendo(true);
+    const leidos = await Promise.all(lista.map(leerArchivoWH));
+    setArchivos((prev) => [...prev, ...leidos]);
+    setLeyendo(false);
+  };
+
+  const importar = async () => {
+    if (!analisis) return;
+    setFase("importando");
+    setError("");
+    try {
+      if (hacerBackup) {
+        setProgreso("Haciendo un respaldo de seguridad…");
+        try {
+          const resp = await fetch("/api/backup-run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ authToken: session?.access_token }),
+          });
+          if (!resp.ok && !window.confirm("No se pudo hacer el respaldo. ¿Importar de todos modos?")) {
+            setFase("elegir");
+            return;
+          }
+        } catch (err) {
+          if (!window.confirm("No se pudo hacer el respaldo. ¿Importar de todos modos?")) {
+            setFase("elegir");
+            return;
+          }
+        }
+      }
+
+      // 1. Planes
+      let planesTodos = planes;
+      if (analisis.planesNuevos.length > 0) {
+        setProgreso(`Creando ${analisis.planesNuevos.length} planes…`);
+        planesTodos = await ensurePlanes(analisis.planesNuevos);
+      }
+      const planId = (nombre) => planesTodos.find((p) => normKey(p.nombre) === normKey(nombre))?.id || null;
+
+      // 2. Clientes nuevos y cambiados
+      const filasCli = [...analisis.cliMap.values()]
+        .filter((c) => c._accion !== "igual")
+        .map((c) => {
+          const fila = { wisphub_usuario: c.wisphub_usuario, plan_id: planId(c.plan_nombre) };
+          CAMPOS_CLIENTE_WH.forEach((campo) => { fila[campo] = c[campo]; });
+          return fila;
+        });
+      await enLotesWH(filasCli, 300, async (lote, i) => {
+        setProgreso(`Guardando clientes ${i + 1} a ${i + lote.length} de ${filasCli.length}…`);
+        const { error: e } = await supabase.from("clientes").upsert(lote, { onConflict: "wisphub_usuario" });
+        if (e) throw new Error(`Clientes: ${e.message}`);
+      });
+
+      // 3. Facturas nuevas y cambiadas
+      setProgreso("Uniendo facturas con sus clientes…");
+      const idsCli = await traerTodoWH("clientes", "id,wisphub_usuario");
+      const idDe = new Map(idsCli.filter((c) => c.wisphub_usuario).map((c) => [c.wisphub_usuario, c.id]));
+      const filasFac = [...analisis.facMap.values()]
+        .filter((f) => (f._accion === "nueva" || f._accion === "cambia") && idDe.get(f.usuario))
+        .map((f) => ({
+          numero_wisphub: f.numero_wisphub,
+          cliente_id: idDe.get(f.usuario),
+          estado: f.estado,
+          monto: f.monto,
+          periodo: f.periodo,
+          fecha_vencimiento: f.fecha_vencimiento,
+          fecha_emision: f.fecha_emision,
+          fecha_pago: f.fecha_pago,
+          forma_pago: f.forma_pago,
+          cajero: f.cajero,
+        }));
+      await enLotesWH(filasFac, 500, async (lote, i) => {
+        setProgreso(`Guardando facturas ${i + 1} a ${i + lote.length} de ${filasFac.length}…`);
+        const { error: e } = await supabase.from("facturas").upsert(lote, { onConflict: "numero_wisphub" });
+        if (e) throw new Error(`Facturas: ${e.message}`);
+      });
+
+      // 4. Quitar facturas pendientes que la app generó sola para el mismo cliente y mes
+      //    (la de WispHub es la buena; así no queda doble deuda).
+      const claves = new Set(
+        [...analisis.facMap.values()]
+          .filter((f) => idDe.get(f.usuario))
+          .map((f) => `${idDe.get(f.usuario)}|${(f.fecha_vencimiento || "").slice(0, 7)}`)
+      );
+      const sobrantes = facturas
+        .filter((f) => !f.numero_wisphub && f.estado !== "pagada" && claves.has(`${f.cliente_id}|${(f.fecha_vencimiento || "").slice(0, 7)}`))
+        .map((f) => f.id);
+      await enLotesWH(sobrantes, 200, async (lote) => {
+        setProgreso("Quitando facturas automáticas repetidas…");
+        const { error: e } = await supabase.from("facturas").delete().in("id", lote);
+        if (e) throw new Error(`Limpieza: ${e.message}`);
+      });
+
+      setResultado({
+        clientes: filasCli.length,
+        facturas: filasFac.length,
+        planes: analisis.planesNuevos.length,
+        sobrantes: sobrantes.length,
+        ignoradas: analisis.facIguales + analisis.facRepetidas,
+        control: analisis.controlRes,
+      });
+      setFase("listo");
+      onTerminado();
+    } catch (err) {
+      setError(err.message || "Ocurrió un error durante la importación.");
+      setFase("elegir");
+    }
+  };
+
+  const hayCambios = analisis && (analisis.cliNuevos + analisis.cliCambian + analisis.facNuevas + analisis.facCambian + analisis.planesNuevos.length > 0);
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-3" style={{ backgroundColor: "#000000AA", zIndex: 9999 }}>
+      <div
+        className="w-full max-w-2xl rounded-xl"
+        style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}`, maxHeight: "92vh", overflowY: "auto" }}
+      >
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <div>
+            <h3 className="text-base font-semibold">Importar de WispHub</h3>
+            <p className="text-xs" style={{ color: COLORS.dim }}>
+              Clientes, planes e historial de facturas. Los repetidos se guardan una sola vez.
+            </p>
+          </div>
+          {fase !== "importando" && (
+            <button onClick={onClose} style={{ color: COLORS.dim }}><X size={18} /></button>
+          )}
+        </div>
+
+        <div className="p-5">
+          {listo === null && <p className="text-sm" style={{ color: COLORS.dim }}>Revisando la base de datos…</p>}
+
+          {listo === false && (
+            <div>
+              <p className="text-sm mb-3">
+                Antes de la primera importación hay que preparar la base de datos una sola vez. En Supabase abre
+                <strong> SQL Editor</strong>, pega esto y toca <strong>Run</strong>. Luego cierra esta ventana y vuelve a abrirla.
+              </p>
+              <pre
+                className="text-xs rounded-lg p-3 mb-3 overflow-x-auto"
+                style={{ backgroundColor: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text, whiteSpace: "pre" }}
+              >
+                {SQL_WISPHUB}
+              </pre>
+              <Button
+                onClick={() => {
+                  navigator.clipboard?.writeText(SQL_WISPHUB);
+                  setCopiado(true);
+                }}
+              >
+                {copiado ? "Copiado ✓" : "Copiar"}
+              </Button>
+            </div>
+          )}
+
+          {listo && fase === "elegir" && (
+            <div>
+              <label
+                className="flex flex-col items-center justify-center gap-2 rounded-xl p-6 mb-4 text-center cursor-pointer"
+                style={{ border: `2px dashed ${COLORS.border}`, backgroundColor: COLORS.panel2 }}
+              >
+                <Upload size={22} color={COLORS.accent} />
+                <span className="text-sm font-medium">{leyendo ? "Leyendo archivos…" : "Elegir archivos de WispHub"}</span>
+                <span className="text-xs" style={{ color: COLORS.dim }}>
+                  El export completo de clientes y todos los de facturas que tengas. Puedes elegir varios a la vez.
+                </span>
+                <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={agregarArchivos} style={{ display: "none" }} />
+              </label>
+
+              {archivos.length > 0 && (
+                <div className="rounded-lg mb-4 overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+                  {archivos.map((a, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 px-3 py-2 text-xs" style={{ borderTop: i ? `1px solid ${COLORS.border}` : "none" }}>
+                      <div className="min-w-0">
+                        <div className="truncate">{a.nombre}</div>
+                        {a.error ? (
+                          <div style={{ color: COLORS.danger }}>{a.error}</div>
+                        ) : (
+                          <div style={{ color: COLORS.dim }}>
+                            {a.tipo === "clientes" ? "Clientes" : "Facturas"}, {a.filas.length} filas
+                          </div>
+                        )}
+                      </div>
+                      <button onClick={() => setArchivos(archivos.filter((_, j) => j !== i))} style={{ color: COLORS.dim }} title="Quitar">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {analisis && (
+                <>
+                  <div className="rounded-lg overflow-hidden mb-4" style={{ border: `1px solid ${COLORS.border}` }}>
+                    <div className="px-4 py-2 text-xs font-medium" style={{ backgroundColor: COLORS.panel2, color: COLORS.dim }}>
+                      Esto es lo que va a pasar
+                    </div>
+                    <FilaResumenWH
+                      titulo={`Clientes (${analisis.cliMap.size} en los archivos)`}
+                      partes={[
+                        { label: "nuevos", valor: analisis.cliNuevos, color: COLORS.active, siempre: true },
+                        { label: "se actualizan", valor: analisis.cliCambian, color: COLORS.accent },
+                        { label: "ya estaban iguales", valor: analisis.cliIguales },
+                        { label: "repetidos en los archivos", valor: analisis.cliRepetidos },
+                      ]}
+                    />
+                    {analisis.planesNuevos.length > 0 && (
+                      <FilaResumenWH
+                        titulo="Planes"
+                        partes={[{ label: `nuevos: ${analisis.planesNuevos.map((p) => p.nombre).join(", ")}`, valor: analisis.planesNuevos.length, color: COLORS.active }]}
+                      />
+                    )}
+                    <FilaResumenWH
+                      titulo={`Facturas (${analisis.facFilas} filas en los archivos)`}
+                      partes={[
+                        { label: "nuevas", valor: analisis.facNuevas, color: COLORS.active, siempre: true },
+                        { label: "se actualizan", valor: analisis.facCambian, color: COLORS.accent },
+                        { label: "ya estaban iguales", valor: analisis.facIguales },
+                        { label: "repetidas entre archivos (se guardan una vez)", valor: analisis.facRepetidas, color: COLORS.warn },
+                        { label: "anuladas en WispHub (se ignoran)", valor: analisis.anuladas },
+                      ]}
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <div className="text-sm font-medium mb-2">Prueba de control</div>
+                    <ControlWH control={analisis.controlRes} />
+                  </div>
+
+                  {analisis.avisos.length > 0 && (
+                    <div className="rounded-lg px-3 py-2 mb-4 text-xs" style={{ backgroundColor: COLORS.warn + "14", border: `1px solid ${COLORS.warn}40`, color: COLORS.warn }}>
+                      {analisis.avisos.map((a) => <div key={a} className="py-0.5">{a}</div>)}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {error && (
+                <div className="rounded-lg px-3 py-2 mb-4 text-xs" style={{ backgroundColor: COLORS.danger + "1A", color: COLORS.danger, border: `1px solid ${COLORS.danger}40` }}>
+                  {error}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-xs" style={{ color: COLORS.dim }}>
+                  <input type="checkbox" checked={hacerBackup} onChange={(e) => setHacerBackup(e.target.checked)} />
+                  Hacer un respaldo antes de importar
+                </label>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+                  <Button onClick={importar} disabled={!hayCambios} style={{ backgroundColor: COLORS.accent, color: "#fff", opacity: hayCambios ? 1 : 0.4 }}>
+                    {analisis && !hayCambios ? "Nada nuevo que importar" : "Importar"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {fase === "importando" && (
+            <div className="py-10 text-center">
+              <div className="text-sm mb-2">{progreso}</div>
+              <div className="text-xs" style={{ color: COLORS.dim }}>No cierres esta ventana.</div>
+            </div>
+          )}
+
+          {fase === "listo" && resultado && (
+            <div>
+              <div className="flex items-center gap-2 mb-4" style={{ color: COLORS.active }}>
+                <CheckCircle2 size={20} />
+                <span className="text-sm font-medium">Importación terminada</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                {[
+                  { label: "Clientes guardados", v: resultado.clientes },
+                  { label: "Facturas guardadas", v: resultado.facturas },
+                  { label: "Planes creados", v: resultado.planes },
+                  { label: "Repetidas ignoradas", v: resultado.ignoradas },
+                ].map((k) => (
+                  <div key={k.label} className="rounded-lg p-3" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+                    <div className="font-mono text-lg">{k.v}</div>
+                    <div className="text-xs" style={{ color: COLORS.dim }}>{k.label}</div>
+                  </div>
+                ))}
+              </div>
+              {resultado.sobrantes > 0 && (
+                <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+                  Se quitaron {resultado.sobrantes} facturas automáticas que repetían una de WispHub.
+                </p>
+              )}
+              <div className="mb-4">
+                <div className="text-sm font-medium mb-2">Prueba de control</div>
+                <ControlWH control={resultado.control} />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => { setArchivos([]); setResultado(null); setFase("elegir"); }}>
+                  Importar más archivos
+                </Button>
+                <Button onClick={onClose}>Listo</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2162,7 +2867,7 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   const [formato, setFormato] = useState(formatoDefault || "termica"); // "termica" o "carta"
   const fecha = factura.fecha_pago ? new Date(factura.fecha_pago) : new Date();
   const pagada = factura.estado === "pagada";
-  const numeroRecibo = String(factura.id).replace(/\D/g, "").slice(-5).padStart(5, "0") || String(factura.id).slice(-5);
+  const numeroRecibo = factura.numero_wisphub ? String(factura.numero_wisphub) : String(factura.id).replace(/\D/g, "").slice(-5).padStart(5, "0") || String(factura.id).slice(-5);
   const empresaMostrar = empresa || EMPRESA_DEFAULT;
   const escala = tamano === "chico" ? 0.8 : tamano === "grande" ? 1.25 : 1;
   const sz = (n) => Math.round(n * escala);
@@ -2797,8 +3502,8 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
   // Ingresos cobrados por mes: cubre todo el rango real de tus facturas pagadas (hasta 24 meses),
   // o los últimos 6 meses si aún no tienes historial cargado.
   const fechasPagadas = facturas
-    .filter((f) => f.estado === "pagada" && f.fecha_vencimiento)
-    .map((f) => f.fecha_vencimiento.slice(0, 7))
+    .filter((f) => f.estado === "pagada" && (f.fecha_pago || f.fecha_vencimiento))
+    .map(mesDePago)
     .sort();
   const meses = [];
   if (fechasPagadas.length > 0) {
@@ -2828,7 +3533,7 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
   }
   const ingresosPorMes = meses.map((m) => {
     const total = facturas
-      .filter((f) => f.estado === "pagada" && f.fecha_vencimiento && f.fecha_vencimiento.startsWith(m.key))
+      .filter((f) => f.estado === "pagada" && mesDePago(f) === m.key)
       .reduce((s, f) => s + Number(f.monto || 0), 0);
     return { mes: m.label, ingresos: total };
   });
