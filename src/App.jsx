@@ -2254,7 +2254,21 @@ function leerArchivoWH(file) {
           if (headers.includes("usuario")) tipo = "clientes";
           else error = "Este es el export corto de clientes. Usa el completo, el que trae la columna Usuario.";
         } else error = "No reconozco este archivo como clientes ni facturas de WispHub.";
-        resolve({ nombre: file.name, tipo, filas, error });
+        // Rango de cada archivo de facturas, para ver de un vistazo qué periodo trae.
+        let rango = null;
+        if (tipo === "facturas") {
+          const nums = filas.map((r) => parseInt(txtWH(r["#factura"]).replace(/\D/g, ""), 10)).filter((n) => n > 0);
+          const fechas = filas.map((r) => fechaWH(r["fecha emision"])?.fecha).filter(Boolean).sort();
+          if (nums.length) {
+            rango = {
+              numMin: Math.min(...nums),
+              numMax: Math.max(...nums),
+              desde: fechas[0] || null,
+              hasta: fechas[fechas.length - 1] || null,
+            };
+          }
+        }
+        resolve({ nombre: file.name, tipo, filas, error, rango });
       } catch (err) {
         resolve({ nombre: file.name, tipo: null, filas: [], error: "No se pudo leer el archivo." });
       }
@@ -2276,13 +2290,18 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
   const facMap = new Map();
   const extra = new Map();
   let facFilas = 0, facRepetidas = 0, anuladas = 0, sinNumero = 0;
+  const numerosAnulados = new Set();
   archivos.filter((a) => a.tipo === "facturas").forEach((a) =>
     a.filas.forEach((r) => {
       facFilas++;
       const numero = parseInt(txtWH(r["#factura"]).replace(/\D/g, ""), 10);
       if (!numero) { sinNumero++; return; }
       const est = normKey(r["estado"]);
-      if (est.startsWith("cancelad") || est.startsWith("anulad")) { anuladas++; return; }
+      if (est.startsWith("cancelad") || est.startsWith("anulad")) {
+        if (!numerosAnulados.has(numero)) anuladas++;
+        numerosAnulados.add(numero);
+        return;
+      }
       const pagada = est.startsWith("pagad");
       const usuario = txtWH(r["usuario"]).toLowerCase();
       const venc = fechaWH(r["fecha vencimiento"]);
@@ -2459,6 +2478,14 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
     controlRes = { t, diferencias };
   }
 
+  if (facMap.size > 0) {
+    const nums = [...facMap.keys()];
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    const huecos = max - min + 1 - nums.length - anuladas;
+    if (min > 1) avisos.push(`Tus facturas empiezan en la #${min}. Las anteriores no están en ningún archivo: exporta periodos más viejos de WispHub.`);
+    if (huecos > 20) avisos.push(`Entre la #${min} y la #${max} faltan unos ${huecos} números. Puede que te falte algún periodo en el medio.`);
+  }
   if (sinNumero) avisos.push(`${sinNumero} filas de facturas sin número se ignoraron.`);
   if (telRaros) avisos.push(`${telRaros} teléfonos tienen dígitos de más o de menos. Puedes corregirlos después en cada cliente.`);
   if (sinCoords) avisos.push(`${sinCoords} clientes no tienen coordenadas y no saldrán en el mapa.`);
@@ -2791,9 +2818,25 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                         {a.error ? (
                           <div style={{ color: COLORS.danger }}>{a.error}</div>
                         ) : (
+                          <>
                           <div style={{ color: COLORS.dim }}>
                             {{ clientes: "Clientes", facturas: "Facturas", planes: "Planes" }[a.tipo]}, {a.filas.length} filas
+                            {a.rango && (
+                              <>
+                                {a.rango.desde && `, emitidas del ${a.rango.desde.split("-").reverse().join("/")} al ${a.rango.hasta.split("-").reverse().join("/")}`}
+                                {`, #${a.rango.numMin} a #${a.rango.numMax}`}
+                              </>
+                            )}
                           </div>
+                          {a.rango &&
+                            archivos.slice(0, i).some(
+                              (b) => b.rango && b.rango.numMin === a.rango.numMin && b.rango.numMax === a.rango.numMax && b.filas.length === a.filas.length
+                            ) && (
+                              <div style={{ color: COLORS.warn }}>
+                                Trae el mismo periodo que otro archivo de la lista. Revisa el filtro de fechas en WispHub.
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                       <button onClick={() => setArchivos(archivos.filter((_, j) => j !== i))} style={{ color: COLORS.dim }} title="Quitar">
