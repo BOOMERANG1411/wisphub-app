@@ -1819,7 +1819,7 @@ export default function App() {
                       </div>
                       <div className="text-sm font-medium mb-1">{p.nombre}</div>
                       <div className="text-xs mb-2" style={{ color: COLORS.dim }}>
-                        {p.velocidad ? `${p.velocidad}, ` : ""}{cantidad} cliente{cantidad === 1 ? "" : "s"}
+                        {p.velocidad ? `${p.velocidad}, ` : ""}{p.perfil_mikrotik ? `perfil ${p.perfil_mikrotik}, ` : ""}{cantidad} cliente{cantidad === 1 ? "" : "s"}
                       </div>
                       <div className="font-mono text-lg" style={{ color: COLORS.text }}>{money(p.precio)}<span className="text-xs" style={{ color: COLORS.dim }}>/mes</span></div>
                     </div>
@@ -2171,7 +2171,9 @@ alter table facturas add column if not exists numero_wisphub integer;
 alter table facturas add column if not exists fecha_pago timestamptz;
 alter table facturas add column if not exists fecha_emision date;
 alter table facturas add column if not exists cajero text;
-create unique index if not exists facturas_numero_wisphub_key on facturas (numero_wisphub);`;
+create unique index if not exists facturas_numero_wisphub_key on facturas (numero_wisphub);
+
+alter table planes add column if not exists perfil_mikrotik text;`;
 
 const normKey = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 const txtWH = (v) => (v instanceof Date ? fmtISO(v) : String(v ?? "")).trim();
@@ -2187,6 +2189,25 @@ function fechaWH(v) {
   m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
   if (m) return { fecha: `${m[1]}-${m[2]}-${m[3]}`, hora: m[4] ? `${m[4]}:${m[5]}` : null };
   return null;
+}
+
+// Lee la salida de "/ppp profile export" de MikroTik y devuelve { perfil -> velocidad }.
+function perfilesMikrotik(texto) {
+  const mapa = new Map();
+  if (!texto) return mapa;
+  const unido = texto.replace(/\\\r?\n\s*/g, "");
+  const valor = (linea, campo) => {
+    const m = linea.match(new RegExp(`(?:^|\\s)${campo}=("(?:[^"\\\\]|\\\\.)*"|\\S+)`));
+    if (!m) return null;
+    return m[1].replace(/^"|"$/g, "").replace(/\\(.)/g, "$1").trim();
+  };
+  unido.split(/\r?\n/).forEach((linea) => {
+    if (!/^\s*add\s/.test(linea)) return;
+    const nombre = valor(linea, "name");
+    const rate = valor(linea, "rate-limit");
+    if (nombre && rate) mapa.set(normKey(nombre), rate.split(/\s+/)[0]);
+  });
+  return mapa;
 }
 
 // "3, $2700.00" -> { n: 3, monto: 2700 }
@@ -2228,6 +2249,7 @@ function leerArchivoWH(file) {
         let tipo = null;
         let error = "";
         if (headers.includes("#factura")) tipo = "facturas";
+        else if (headers.includes("profile") && headers.includes("precio") && !headers.includes("servicio")) tipo = "planes";
         else if (headers.includes("nombre") && headers.includes("servicio")) {
           if (headers.includes("usuario")) tipo = "clientes";
           else error = "Este es el export corto de clientes. Usa el completo, el que trae la columna Usuario.";
@@ -2247,7 +2269,7 @@ const CAMPOS_CLIENTE_WH = [
   "ip_asignada", "fecha_instalacion", "fecha_cancelacion", "comentarios", "lat", "lng",
 ];
 
-function analizarWH(archivos, clientesDB, facturasDB, planesDB) {
+function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
   const avisos = [];
 
   /* ----- Facturas (primero, porque traen dirección y teléfono extra) ----- */
@@ -2357,12 +2379,34 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB) {
     if (cambia) cliCambian++; else cliIguales++;
   });
 
-  const planesNuevos = [];
-  const vistos = new Set(planesDB.map((p) => normKey(p.nombre)));
+  /* ----- Planes: archivo de planes + los que usan los clientes + velocidades de MikroTik ----- */
+  const velocidades = perfilesMikrotik(mikrotikTexto);
+  const planMap = new Map();
+  archivos.filter((a) => a.tipo === "planes").forEach((a) =>
+    a.filas.forEach((r) => {
+      const nombre = txtWH(r["nombre"]);
+      if (!nombre || normKey(nombre).includes("suspendido")) return; // perfil de corte, no es un plan de venta
+      const perfil = txtWH(r["profile"]);
+      planMap.set(normKey(nombre), { nombre, precio: numWH(r["precio"]), perfil: perfil || null, velocidad: velocidades.get(normKey(perfil)) || null });
+    })
+  );
   cliMap.forEach((c) => {
     const k = normKey(c.plan_nombre);
-    if (c.plan_nombre && !vistos.has(k)) { vistos.add(k); planesNuevos.push({ nombre: c.plan_nombre, precio: c.plan_precio }); }
+    if (c.plan_nombre && !planMap.has(k)) planMap.set(k, { nombre: c.plan_nombre, precio: c.plan_precio, perfil: null, velocidad: null });
   });
+  let planesSinVelocidad = 0;
+  const planes = [...planMap.values()].map((p) => {
+    if (velocidades.size > 0 && p.perfil && !p.velocidad) planesSinVelocidad++;
+    const d = planesDB.find((x) => normKey(x.nombre) === normKey(p.nombre));
+    if (!d) return { ...p, _accion: "nuevo" };
+    const cambia =
+      Math.abs(Number(d.precio || 0) - p.precio) > 0.001 ||
+      (p.velocidad && p.velocidad !== d.velocidad) ||
+      (p.perfil && p.perfil !== d.perfil_mikrotik);
+    return { ...p, _id: d.id, _accion: cambia ? "cambia" : "igual" };
+  });
+  const planesNuevos = planes.filter((p) => p._accion === "nuevo");
+  if (planesSinVelocidad) avisos.push(`${planesSinVelocidad} planes no tienen su perfil en lo que pegaste de MikroTik y quedan sin velocidad.`);
 
   /* ----- Facturas contra la base ----- */
   const dbFac = new Map(facturasDB.filter((f) => f.numero_wisphub).map((f) => [Number(f.numero_wisphub), f]));
@@ -2423,7 +2467,7 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB) {
   }
 
   return {
-    cliMap, facMap, planesNuevos, controlRes, avisos,
+    cliMap, facMap, planes, planesNuevos, controlRes, avisos,
     cliFilas, cliRepetidos, cliNuevos, cliCambian, cliIguales,
     facFilas, facRepetidas, anuladas, facNuevas, facCambian, facIguales,
   };
@@ -2534,17 +2578,20 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
   const [resultado, setResultado] = useState(null);
   const [hacerBackup, setHacerBackup] = useState(true);
   const [copiado, setCopiado] = useState(false);
+  const [mikrotikTexto, setMikrotikTexto] = useState("");
+  const [verMikrotik, setVerMikrotik] = useState(false);
 
   useEffect(() => {
     (async () => {
       const a = await supabase.from("clientes").select("wisphub_usuario,fecha_cancelacion,comentarios").limit(1);
       const b = await supabase.from("facturas").select("numero_wisphub,fecha_pago,fecha_emision,cajero").limit(1);
-      setListo(!a.error && !b.error);
+      const c = await supabase.from("planes").select("perfil_mikrotik").limit(1);
+      setListo(!a.error && !b.error && !c.error);
     })();
   }, []);
 
   const validos = archivos.filter((a) => a.tipo);
-  const analisis = validos.length > 0 ? analizarWH(validos, clientes, facturas, planes) : null;
+  const analisis = validos.length > 0 ? analizarWH(validos, clientes, facturas, planes, mikrotikTexto) : null;
 
   const agregarArchivos = async (e) => {
     const lista = Array.from(e.target.files || []);
@@ -2581,12 +2628,25 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
         }
       }
 
-      // 1. Planes
-      let planesTodos = planes;
-      if (analisis.planesNuevos.length > 0) {
-        setProgreso(`Creando ${analisis.planesNuevos.length} planes…`);
-        planesTodos = await ensurePlanes(analisis.planesNuevos);
+      // 1. Planes (nuevos y con cambios de precio, velocidad o perfil)
+      const planesNuevos = analisis.planes.filter((p) => p._accion === "nuevo");
+      const planesCambian = analisis.planes.filter((p) => p._accion === "cambia");
+      if (planesNuevos.length > 0) {
+        setProgreso(`Creando ${planesNuevos.length} planes…`);
+        const { error: e } = await supabase.from("planes").insert(
+          planesNuevos.map((p) => ({ nombre: p.nombre, precio: p.precio, velocidad: p.velocidad || "", perfil_mikrotik: p.perfil }))
+        );
+        if (e) throw new Error(`Planes: ${e.message}`);
       }
+      for (const p of planesCambian) {
+        setProgreso(`Actualizando el plan ${p.nombre}…`);
+        const cambios = { precio: p.precio };
+        if (p.velocidad) cambios.velocidad = p.velocidad;
+        if (p.perfil) cambios.perfil_mikrotik = p.perfil;
+        const { error: e } = await supabase.from("planes").update(cambios).eq("id", p._id);
+        if (e) throw new Error(`Planes: ${e.message}`);
+      }
+      const planesTodos = await traerTodoWH("planes", "id,nombre");
       const planId = (nombre) => planesTodos.find((p) => normKey(p.nombre) === normKey(nombre))?.id || null;
 
       // 2. Clientes nuevos y cambiados
@@ -2646,7 +2706,7 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
       setResultado({
         clientes: filasCli.length,
         facturas: filasFac.length,
-        planes: analisis.planesNuevos.length,
+        planes: planesNuevos.length + planesCambian.length,
         sobrantes: sobrantes.length,
         ignoradas: analisis.facIguales + analisis.facRepetidas,
         control: analisis.controlRes,
@@ -2659,7 +2719,10 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
     }
   };
 
-  const hayCambios = analisis && (analisis.cliNuevos + analisis.cliCambian + analisis.facNuevas + analisis.facCambian + analisis.planesNuevos.length > 0);
+  const hayCambios =
+    analisis &&
+    analisis.cliNuevos + analisis.cliCambian + analisis.facNuevas + analisis.facCambian +
+      analisis.planes.filter((p) => p._accion !== "igual").length > 0;
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-3" style={{ backgroundColor: "#000000AA", zIndex: 9999 }}>
@@ -2714,7 +2777,7 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                 <Upload size={22} color={COLORS.accent} />
                 <span className="text-sm font-medium">{leyendo ? "Leyendo archivos…" : "Elegir archivos de WispHub"}</span>
                 <span className="text-xs" style={{ color: COLORS.dim }}>
-                  El export completo de clientes y todos los de facturas que tengas. Puedes elegir varios a la vez.
+                  El export completo de clientes, el de planes y todos los de facturas que tengas. Puedes elegir varios a la vez.
                 </span>
                 <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={agregarArchivos} style={{ display: "none" }} />
               </label>
@@ -2729,7 +2792,7 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                           <div style={{ color: COLORS.danger }}>{a.error}</div>
                         ) : (
                           <div style={{ color: COLORS.dim }}>
-                            {a.tipo === "clientes" ? "Clientes" : "Facturas"}, {a.filas.length} filas
+                            {{ clientes: "Clientes", facturas: "Facturas", planes: "Planes" }[a.tipo]}, {a.filas.length} filas
                           </div>
                         )}
                       </div>
@@ -2740,6 +2803,27 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                   ))}
                 </div>
               )}
+
+              <div className="mb-4">
+                <button type="button" onClick={() => setVerMikrotik(!verMikrotik)} className="text-xs" style={{ color: COLORS.accent }}>
+                  {verMikrotik ? "Ocultar velocidades de MikroTik" : mikrotikTexto ? "Velocidades de MikroTik pegadas ✓ (ver)" : "Agregar velocidades desde MikroTik (opcional)"}
+                </button>
+                {verMikrotik && (
+                  <div className="mt-2">
+                    <p className="text-xs mb-2" style={{ color: COLORS.dim }}>
+                      En Winbox abre New Terminal, escribe <code>/ppp profile export</code> y pega aquí todo lo que salga.
+                      Cada plan toma la velocidad del perfil que usa en WispHub (necesita el archivo de planes de WispHub).
+                    </p>
+                    <textarea
+                      value={mikrotikTexto}
+                      onChange={(e) => setMikrotikTexto(e.target.value)}
+                      rows={5}
+                      style={{ ...inputStyle, fontFamily: "monospace", fontSize: 12 }}
+                      placeholder="/ppp profile&#10;add ... name=ECONOMICO-1 ... rate-limit=20M/20M ..."
+                    />
+                  </div>
+                )}
+              </div>
 
               {analisis && (
                 <>
@@ -2756,11 +2840,28 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                         { label: "repetidos en los archivos", valor: analisis.cliRepetidos },
                       ]}
                     />
-                    {analisis.planesNuevos.length > 0 && (
-                      <FilaResumenWH
-                        titulo="Planes"
-                        partes={[{ label: `nuevos: ${analisis.planesNuevos.map((p) => p.nombre).join(", ")}`, valor: analisis.planesNuevos.length, color: COLORS.active }]}
-                      />
+                    {analisis.planes.length > 0 && (
+                      <div style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                        <FilaResumenWH
+                          titulo={`Planes (${analisis.planes.length})`}
+                          partes={[
+                            { label: "nuevos", valor: analisis.planes.filter((p) => p._accion === "nuevo").length, color: COLORS.active, siempre: true },
+                            { label: "se actualizan", valor: analisis.planes.filter((p) => p._accion === "cambia").length, color: COLORS.accent },
+                            { label: "ya estaban iguales", valor: analisis.planes.filter((p) => p._accion === "igual").length },
+                          ]}
+                        />
+                        <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+                          {analisis.planes.map((p) => (
+                            <span
+                              key={p.nombre}
+                              className="rounded-full px-2 py-0.5 text-xs"
+                              style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}`, color: p.velocidad ? COLORS.text : COLORS.dim }}
+                            >
+                              {p.nombre}{p.velocidad ? ` · ${p.velocidad}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                     <FilaResumenWH
                       titulo={`Facturas (${analisis.facFilas} filas en los archivos)`}
@@ -2825,7 +2926,7 @@ function MigracionWispHub({ clientes, facturas, planes, ensurePlanes, session, o
                 {[
                   { label: "Clientes guardados", v: resultado.clientes },
                   { label: "Facturas guardadas", v: resultado.facturas },
-                  { label: "Planes creados", v: resultado.planes },
+                  { label: "Planes guardados", v: resultado.planes },
                   { label: "Repetidas ignoradas", v: resultado.ignoradas },
                 ].map((k) => (
                   <div key={k.label} className="rounded-lg p-3" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
