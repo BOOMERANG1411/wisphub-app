@@ -32,6 +32,13 @@ import {
   Receipt,
   DollarSign,
   Settings,
+  Phone,
+  LogOut,
+  CalendarDays,
+  UserPlus,
+  ChevronLeft,
+  ChevronRight,
+  Wrench,
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -51,7 +58,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaf
 const markerIcon = (color) =>
   L.divIcon({
     className: "",
-    html: `<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #10151A;box-shadow:0 0 0 2px ${color}55"></div>`,
+    html: `<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #0D1526;box-shadow:0 0 0 2px ${color}55"></div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   });
@@ -129,23 +136,33 @@ const EMPRESA_DEFAULT = {
   logoUrl: "/logo.png",
 };
 
+// Paleta azul marino, estilo consola de operaciones de un ISP.
 const COLORS = {
-  bg: "#10151A",
-  panel: "#171D23",
-  panel2: "#1D242C",
-  border: "#232B33",
-  text: "#ECEFF1",
-  dim: "#8B98A3",
-  active: "#3EBD82",
-  warn: "#E0A339",
-  danger: "#D9584B",
-  accent: "#4E8DF5",
+  bg: "#0D1526",
+  nav: "#091020",
+  panel: "#132039",
+  panel2: "#192A4A",
+  border: "#22355A",
+  text: "#E8EEF7",
+  dim: "#8DA0BE",
+  active: "#2FBF71",
+  warn: "#F0A23B",
+  danger: "#E5534B",
+  accent: "#2F8CFF",
 };
 
+// Colores sólidos de las tarjetas del Panel.
+const TILE = {
+  hoy: "#1597BB",
+  mes: "#2F6FE0",
+  atraso: "#DE7A2C",
+  clientes: "#D4476C",
+};
+
+// Moneda dominicana: RD$ 1,500.00
 const money = (n) =>
-  new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(
-    Number(n) || 0
-  );
+  "RD$ " +
+  new Intl.NumberFormat("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
 
 function EstadoBadge({ estado }) {
   const map = {
@@ -157,7 +174,7 @@ function EstadoBadge({ estado }) {
   const { color, label, Icon } = map[estado] || map.activo;
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap"
       style={{ color, backgroundColor: color + "1A", border: `1px solid ${color}40` }}
     >
       <Icon size={12} />
@@ -171,7 +188,7 @@ function CicloBadge({ ciclo }) {
   const color = es30 ? COLORS.warn : COLORS.accent;
   return (
     <span
-      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap"
       style={{ color, backgroundColor: color + "1A", border: `1px solid ${color}40` }}
     >
       {es30 ? "Corte 30" : "Corte 15"}
@@ -287,6 +304,96 @@ function OrdenFlecha({ label, campo, valor, onChange }) {
   );
 }
 
+/* ---------- Piezas nuevas del Panel ---------- */
+
+function Reloj() {
+  const [ahora, setAhora] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setAhora(new Date()), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const fecha = ahora.toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const hora = ahora.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <p className="text-sm" style={{ color: COLORS.dim }}>
+      <span style={{ textTransform: "capitalize" }}>{fecha}</span>, {hora}
+    </p>
+  );
+}
+
+function KpiTile({ color, Icon, valor, label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="relative overflow-hidden rounded-xl p-4 text-left transition-transform active:scale-95"
+      style={{ backgroundColor: color, color: "#fff", minHeight: 96 }}
+    >
+      <Icon size={72} style={{ position: "absolute", right: -8, bottom: -14, opacity: 0.2 }} />
+      <div className="relative font-mono text-lg md:text-2xl font-semibold leading-tight">{valor}</div>
+      <div className="relative text-xs md:text-sm mt-1" style={{ opacity: 0.92 }}>{label}</div>
+    </button>
+  );
+}
+
+function Seccion({ titulo, Icon, accion, children }) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Icon size={16} color={COLORS.accent} />
+          {titulo}
+        </div>
+        {accion}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Trio({ items }) {
+  return (
+    <div className="grid grid-cols-3">
+      {items.map((it, i) => (
+        <button
+          key={it.label}
+          type="button"
+          onClick={it.onClick}
+          className="py-4 px-2 text-center"
+          style={{ borderLeft: i > 0 ? `1px solid ${COLORS.border}` : "none", cursor: it.onClick ? "pointer" : "default" }}
+        >
+          <div className="font-mono text-2xl md:text-3xl font-semibold" style={{ color: it.color || COLORS.text }}>{it.valor}</div>
+          <div className="text-xs mt-1" style={{ color: COLORS.dim }}>{it.label}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function IconoAccion({ href, onClick, title, color, children }) {
+  const cls = "inline-flex items-center justify-center rounded-md";
+  const style = { width: 30, height: 30, color, backgroundColor: color + "1A", border: `1px solid ${color}40` };
+  if (href) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer" title={title} className={cls} style={style}>
+        {children}
+      </a>
+    );
+  }
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} title={title} className={cls} style={style}>
+        {children}
+      </button>
+    );
+  }
+  return (
+    <span title={title + " (sin datos)"} className={cls} style={{ ...style, opacity: 0.25 }}>
+      {children}
+    </span>
+  );
+}
+
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -357,6 +464,9 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [facturaFiltro, setFacturaFiltro] = useState("todas");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [clientesVista, setClientesVista] = useState("lista"); // "lista" o "atraso"
+  const [pageSize, setPageSize] = useState(25);
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [ordenCliente, setOrdenCliente] = useState("nombre_asc");
   const [ordenPlan, setOrdenPlan] = useState("nombre_asc");
@@ -470,6 +580,14 @@ export default function App() {
         .then(({ data }) => setPerfil(data || { rol: "sin_acceso", nombre: session.user.email }));
     }
   }, [session, loadAll]);
+
+  // Los cajeros no tienen acceso al Panel: al entrar los mandamos a su primera área permitida.
+  useEffect(() => {
+    if (perfil && perfil.rol !== "admin" && perfil.rol !== "sin_acceso") {
+      const permisos = perfil.permisos || [];
+      if (!permisos.includes("dashboard")) setTab(permisos[0] || "clientes");
+    }
+  }, [perfil]);
 
   const esAdmin = perfil?.rol === "admin";
   const esCajero = perfil?.rol === "cajero";
@@ -905,12 +1023,18 @@ export default function App() {
       loadAll();
     }
   };
+  // Guarda también la fecha y hora del pago (columna fecha_pago) para "Ingresos hoy".
+  // Si esa columna todavía no existe en Supabase, el pago se guarda igual sin ella.
   const markPaid = async (id, formaPago) => {
     const { data: userData } = await supabase.auth.getUser();
-    const { error } = await supabase
+    const base = { estado: "pagada", forma_pago: formaPago, cobrado_por: userData?.user?.id || null };
+    let { error } = await supabase
       .from("facturas")
-      .update({ estado: "pagada", forma_pago: formaPago, cobrado_por: userData?.user?.id || null })
+      .update({ ...base, fecha_pago: new Date().toISOString() })
       .eq("id", id);
+    if (error && /fecha_pago/i.test(error.message || "")) {
+      ({ error } = await supabase.from("facturas").update(base).eq("id", id));
+    }
     if (error) setErrorMsg(error.message);
     else {
       setPagoModal(null);
@@ -959,153 +1083,452 @@ export default function App() {
     );
   }
 
-  const filteredClients = clientes
-    .filter((c) => (c.nombre || "").toLowerCase().includes(search.toLowerCase()))
+  /* ----- Datos calculados para el Panel y la lista de clientes ----- */
+  const hoy = new Date();
+  const hoyISO = fmtISO(hoy);
+  const mesISO = hoyISO.slice(0, 7);
+  const anioISO = hoyISO.slice(0, 4);
+  const sumar = (lista) => lista.reduce((s, f) => s + Number(f.monto || 0), 0);
+  const fechaPagoDe = (f) => (f.fecha_pago ? fmtISO(new Date(f.fecha_pago)) : null);
+
+  const pagadas = facturas.filter((f) => f.estado === "pagada");
+  const ingresosHoy = sumar(pagadas.filter((f) => fechaPagoDe(f) === hoyISO));
+  // Pagos nuevos usan su fecha real de pago; los viejos (sin fecha_pago) usan el mes de vencimiento.
+  const ingresosMesActual = sumar(
+    pagadas.filter((f) => {
+      const fp = fechaPagoDe(f);
+      return fp ? fp.startsWith(mesISO) : (f.fecha_vencimiento || "").startsWith(mesISO);
+    })
+  );
+  const totalActivos = clientes.filter((c) => c.estado === "activo").length;
+  const porCobrarMonto = sumar(facturas.filter((f) => f.estado !== "pagada"));
+  const facturasVencidas = facturas.filter((f) => estadoVisual(f, hoy) === "vencida");
+  const prorrogasActivas = facturas.filter((f) => f.estado !== "pagada" && f.prorroga_hasta && f.prorroga_hasta >= hoyISO).length;
+
+  // Deuda vencida por cliente (para "Atraso de pago").
+  const deudaPorCliente = {};
+  facturasVencidas.forEach((f) => {
+    const d = deudaPorCliente[f.cliente_id] || { monto: 0, cantidad: 0, factura: f };
+    d.monto += Number(f.monto || 0);
+    d.cantidad += 1;
+    if ((f.fecha_vencimiento || "") < (d.factura.fecha_vencimiento || "")) d.factura = f;
+    deudaPorCliente[f.cliente_id] = d;
+  });
+  const clientesEnAtraso = clientes.filter((c) => deudaPorCliente[c.id]);
+  const diasDeAtraso = (f) => {
+    const limite = new Date((f.prorroga_hasta || f.fecha_vencimiento) + "T00:00:00");
+    return Math.max(1, Math.ceil((hoy - limite) / 86400000));
+  };
+
+  const instHoy = clientes.filter((c) => c.fecha_instalacion === hoyISO).length;
+  const instMes = clientes.filter((c) => (c.fecha_instalacion || "").startsWith(mesISO)).length;
+  const instAnio = clientes.filter((c) => (c.fecha_instalacion || "").startsWith(anioISO)).length;
+
+  const ultimosPagos = pagadas
+    .slice()
+    .sort((a, b) => (b.fecha_pago || "").localeCompare(a.fecha_pago || ""))
+    .slice(0, 6);
+  const peoresAtrasos = clientesEnAtraso
+    .slice()
+    .sort((a, b) => deudaPorCliente[b.id].monto - deudaPorCliente[a.id].monto)
+    .slice(0, 6);
+
+  // Lista de clientes: búsqueda por nombre, usuario PPPoE, IP, teléfono o dirección.
+  const q = search.toLowerCase().trim();
+  const baseClientes = clientesVista === "atraso" ? clientesEnAtraso : clientes;
+  const filteredClients = baseClientes
+    .filter((c) => !q || [c.nombre, c.pppoe_usuario, c.ip_asignada, c.telefono, c.direccion].some((v) => (v || "").toLowerCase().includes(q)))
     .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro)
     .slice()
     .sort((a, b) => {
       if (ordenCliente === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
       if (ordenCliente === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
+      if (ordenCliente === "deuda_asc") return (deudaPorCliente[a.id]?.monto || 0) - (deudaPorCliente[b.id]?.monto || 0);
+      if (ordenCliente === "deuda_desc") return (deudaPorCliente[b.id]?.monto || 0) - (deudaPorCliente[a.id]?.monto || 0);
       return 0;
     });
+  const totalPaginas = pageSize === "todos" ? 1 : Math.max(1, Math.ceil(filteredClients.length / pageSize));
+  const paginaActual = Math.min(page, totalPaginas);
+  const inicio = pageSize === "todos" ? 0 : (paginaActual - 1) * pageSize;
+  const clientesPagina = pageSize === "todos" ? filteredClients : filteredClients.slice(inicio, inicio + pageSize);
 
-  const totalActivos = clientes.filter((c) => c.estado === "activo").length;
-  const totalMorosos = clientes.filter((c) => c.estado === "moroso").length;
-  const ingresosMes = facturas
-    .filter((f) => f.estado === "pagada")
-    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
-  const pendientesMonto = facturas
-    .filter((f) => f.estado !== "pagada")
-    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const editarCliente = (c) =>
+    setClientModal({
+      id: c.id,
+      nombre: c.nombre,
+      telefono: c.telefono,
+      direccion: c.direccion,
+      planId: c.plan_id,
+      estado: c.estado,
+      lat: c.lat,
+      lng: c.lng,
+      ciclo: c.ciclo,
+      pppoe_usuario: c.pppoe_usuario,
+      pppoe_secret: c.pppoe_secret,
+      ip_asignada: c.ip_asignada,
+      equipo: c.equipo,
+      cedula: c.cedula,
+      fecha_instalacion: c.fecha_instalacion,
+    });
+  const eliminarCliente = (c) => {
+    if (window.confirm(`¿Eliminar a ${c.nombre}? Esto no se puede deshacer.`)) deleteClient(c.id);
+  };
+
+  const irAClientes = (vista, estado = "todos") => {
+    setClientesVista(vista);
+    setClienteFiltro(estado);
+    setPage(1);
+    setTab("clientes");
+  };
+  const irABuscar = () => {
+    irAClientes("lista");
+    setTimeout(() => document.getElementById("buscador-global")?.focus(), 60);
+  };
+
+  const renderContacto = (c) => {
+    const deuda = deudaPorCliente[c.id];
+    const digits = (c.telefono || "").replace(/\D/g, "");
+    const wa = deuda ? whatsappLink(c.telefono, mensajeRecordatorio(c, deuda.factura)) : whatsappLink(c.telefono, `Hola ${c.nombre}, `);
+    return (
+      <>
+        <IconoAccion title="Llamar" color={COLORS.accent} href={digits ? `tel:${digits}` : null}>
+          <Phone size={14} />
+        </IconoAccion>
+        <IconoAccion title={deuda ? "Recordar pago por WhatsApp" : "WhatsApp"} color={COLORS.active} href={wa}>
+          <MessageCircle size={14} />
+        </IconoAccion>
+        <IconoAccion
+          title="Ver en Google Maps"
+          color={COLORS.warn}
+          href={c.lat && c.lng ? `https://www.google.com/maps?q=${c.lat},${c.lng}` : null}
+        >
+          <MapPin size={14} />
+        </IconoAccion>
+      </>
+    );
+  };
 
   const NAV_COMPLETO = [
-    { id: "dashboard", label: "Panel", Icon: LayoutDashboard },
-    { id: "clientes", label: "Clientes", Icon: Users },
-    { id: "planes", label: "Planes", Icon: Wifi },
-    { id: "facturacion", label: "Facturación", Icon: FileText },
-    { id: "reportes", label: "Reportes", Icon: BarChart3 },
-    { id: "mapa", label: "Mapa", Icon: MapPin },
-    { id: "caja", label: "Caja", Icon: Wallet },
-    { id: "puntos-pago", label: "Puntos de pago", Icon: DollarSign },
-    { id: "configuracion", label: "Configuración", Icon: Settings },
+    { id: "dashboard", label: "Panel", Icon: LayoutDashboard, grupo: "Operación" },
+    { id: "clientes", label: "Clientes", Icon: Users, grupo: "Operación" },
+    { id: "planes", label: "Planes", Icon: Wifi, grupo: "Operación" },
+    { id: "mapa", label: "Mapa", Icon: MapPin, grupo: "Operación" },
+    { id: "facturacion", label: "Facturación", Icon: FileText, grupo: "Cobros" },
+    { id: "caja", label: "Caja", Icon: Wallet, grupo: "Cobros" },
+    { id: "puntos-pago", label: "Puntos de pago", Icon: DollarSign, grupo: "Cobros" },
+    { id: "reportes", label: "Reportes", Icon: BarChart3, grupo: "Análisis" },
+    { id: "configuracion", label: "Configuración", Icon: Settings, grupo: "Sistema" },
   ];
   const NAV = esAdmin ? NAV_COMPLETO : NAV_COMPLETO.filter((n) => tienePermiso(n.id));
+  const GRUPOS = [...new Set(NAV.map((n) => n.grupo))];
+  const nombreUsuario = perfil?.nombre || session?.user?.email || "";
 
   return (
-    <div
-      className="min-h-screen w-full flex flex-col md:flex-row"
-      style={{ backgroundColor: COLORS.bg, color: COLORS.text }}
-    >
+    <div className="min-h-screen w-full flex" style={{ backgroundColor: COLORS.bg, color: COLORS.text }}>
+      {/* ---------- Barra lateral (computadora) ---------- */}
       <nav
-        className="md:w-56 w-full flex md:flex-col justify-between md:justify-start order-2 md:order-1 md:h-screen md:sticky md:top-0 px-3 py-3 md:py-5 no-print"
-        style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, borderRight: `1px solid ${COLORS.border}` }}
+        className="hidden md:flex flex-col w-60 shrink-0 h-screen sticky top-0 no-print"
+        style={{ backgroundColor: COLORS.nav, borderRight: `1px solid ${COLORS.border}` }}
       >
-        <div className="hidden md:flex items-center gap-2 px-2 mb-6">
-          <SignalHigh size={20} color={COLORS.accent} />
-          <span className="font-display font-semibold text-lg">ISP-Control</span>
+        <div className="flex items-center gap-3 px-4 py-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <img
+            src={empresaActual.logoUrl}
+            alt=""
+            className="rounded-lg object-contain"
+            style={{ width: 38, height: 38, backgroundColor: "#fff", padding: 3 }}
+            onError={(e) => { e.currentTarget.style.display = "none"; }}
+          />
+          <div className="min-w-0">
+            <div className="font-display font-semibold text-sm truncate">{empresaActual.nombre}</div>
+            <div className="text-xs" style={{ color: COLORS.dim }}>ISP-Control</div>
+          </div>
         </div>
-        <div className="flex md:flex-col w-full gap-1 justify-around md:justify-start">
-          {NAV.map(({ id, label, Icon }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className="flex md:flex-row flex-col items-center gap-1 md:gap-2 rounded-lg px-3 py-2 text-xs md:text-sm font-medium transition-colors"
-              style={{
-                backgroundColor: tab === id ? COLORS.accent + "1F" : "transparent",
-                color: tab === id ? COLORS.accent : COLORS.dim,
-              }}
-            >
-              <Icon size={18} />
-              {label}
-            </button>
+        <div className="flex-1 overflow-y-auto px-2 py-3">
+          {GRUPOS.map((g) => (
+            <div key={g} className="mb-3">
+              <div className="px-3 mb-1 text-xs" style={{ color: COLORS.dim, opacity: 0.7 }}>{g}</div>
+              {NAV.filter((n) => n.grupo === g).map(({ id, label, Icon }) => {
+                const activo = tab === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setTab(id)}
+                    className="w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium mb-0.5"
+                    style={{
+                      backgroundColor: activo ? COLORS.accent + "26" : "transparent",
+                      color: activo ? "#fff" : COLORS.dim,
+                      boxShadow: activo ? `inset 3px 0 0 ${COLORS.accent}` : "none",
+                    }}
+                  >
+                    <Icon size={18} color={activo ? COLORS.accent : undefined} />
+                    {label}
+                    {id === "clientes" && clientesEnAtraso.length > 0 && (
+                      <span
+                        className="ml-auto rounded-full px-1.5 text-xs font-mono"
+                        style={{ backgroundColor: COLORS.danger, color: "#fff" }}
+                        title="Clientes con facturas vencidas"
+                      >
+                        {clientesEnAtraso.length}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </div>
-        <button
-          onClick={() => supabase.auth.signOut()}
-          className="hidden md:block text-xs px-2 py-2 mt-4 text-left"
-          style={{ color: COLORS.dim }}
-        >
-          Cerrar sesión
-        </button>
+        <div className="px-4 py-3 text-xs" style={{ borderTop: `1px solid ${COLORS.border}`, color: COLORS.dim }}>
+          <div className="truncate mb-2" style={{ color: COLORS.text }}>{nombreUsuario}</div>
+          <button onClick={() => supabase.auth.signOut()} className="inline-flex items-center gap-1.5">
+            <LogOut size={14} /> Cerrar sesión
+          </button>
+        </div>
       </nav>
 
-      <main className="flex-1 order-1 md:order-2 px-4 md:px-8 py-6 md:py-8 pb-24 md:pb-8">
-        {errorMsg && (
-          <div
-            className="mb-4 rounded-lg px-3 py-2 text-xs"
-            style={{ backgroundColor: COLORS.danger + "1A", color: COLORS.danger, border: `1px solid ${COLORS.danger}40` }}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* ---------- Barra superior ---------- */}
+        <header
+          className="sticky top-0 flex items-center gap-3 px-4 md:px-8 py-3 no-print"
+          style={{ backgroundColor: COLORS.bg + "F2", borderBottom: `1px solid ${COLORS.border}`, zIndex: 1100, backdropFilter: "blur(6px)" }}
+        >
+          <div className="md:hidden font-display font-semibold text-sm truncate" style={{ maxWidth: 110 }}>
+            {empresaActual.nombre}
+          </div>
+          {tienePermiso("clientes") ? (
+            <div className="relative flex-1 max-w-md">
+              <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
+              <input
+                id="buscador-global"
+                style={{ ...inputStyle, paddingLeft: 32, borderRadius: 999 }}
+                placeholder="Buscar cliente, usuario PPPoE o IP"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                  if (tab !== "clientes") setTab("clientes");
+                }}
+              />
+            </div>
+          ) : (
+            <div className="flex-1" />
+          )}
+          <div className="hidden md:flex items-center gap-2 text-xs" style={{ color: COLORS.dim }}>
+            <span
+              className="rounded-full px-2 py-0.5"
+              style={{ border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+            >
+              {esAdmin ? "Administrador" : esCajero ? "Cajero" : "Usuario"}
+            </span>
+          </div>
+          <button
+            onClick={() => supabase.auth.signOut()}
+            className="md:hidden"
+            style={{ color: COLORS.dim }}
+            title="Cerrar sesión"
           >
-            {errorMsg}
-          </div>
-        )}
+            <LogOut size={18} />
+          </button>
+        </header>
 
-        {tab === "dashboard" && (
-          <div>
-            <h1 className="font-display text-xl md:text-2xl font-semibold mb-1">Panel general</h1>
-            <p className="text-sm mb-6" style={{ color: COLORS.dim }}>
-              Estado de tu red de clientes en un vistazo.
-            </p>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
-              {[
-                { label: "Clientes activos", value: totalActivos, color: COLORS.active, ir: () => { setClienteFiltro("activo"); setTab("clientes"); } },
-                { label: "Clientes morosos", value: totalMorosos, color: COLORS.danger, ir: () => { setClienteFiltro("moroso"); setTab("clientes"); } },
-                { label: "Ingresos cobrados", value: money(ingresosMes), color: COLORS.text, ir: () => { setFacturaFiltro("pagada"); setTab("facturacion"); } },
-                { label: "Por cobrar", value: money(pendientesMonto), color: COLORS.warn, ir: () => { setFacturaFiltro("por_cobrar"); setTab("facturacion"); } },
-              ].map((k) => (
-                <button
-                  key={k.label}
-                  onClick={k.ir}
-                  className="rounded-xl p-4 text-left transition-opacity hover:opacity-80"
-                  style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
-                >
-                  <div className="text-xs mb-2" style={{ color: COLORS.dim }}>
-                    {k.label}
-                  </div>
-                  <div className="font-mono text-xl font-medium" style={{ color: k.color }}>
-                    {k.value}
-                  </div>
-                </button>
-              ))}
+        <main className="flex-1 px-4 md:px-8 py-6 pb-28 md:pb-10">
+          {errorMsg && (
+            <div
+              className="mb-4 rounded-lg px-3 py-2 text-xs flex items-start justify-between gap-3"
+              style={{ backgroundColor: COLORS.danger + "1A", color: COLORS.danger, border: `1px solid ${COLORS.danger}40` }}
+            >
+              <span>{errorMsg}</span>
+              <button onClick={() => setErrorMsg("")} title="Cerrar aviso"><X size={14} /></button>
             </div>
+          )}
 
-            <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>
-              FACTURAS RECIENTES
-            </h2>
-            <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
-              {facturas.length === 0 ? (
-                <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
-                  Aún no hay facturas. Créalas desde la pestaña Facturación.
+          {/* ---------- PANEL ---------- */}
+          {tab === "dashboard" && (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-3 mb-5">
+                <div>
+                  <h1 className="font-display text-xl md:text-2xl font-semibold">Panel</h1>
+                  <Reloj />
                 </div>
-              ) : (
-                facturas.slice(-5).reverse().map((f) => {
-                  const c = clientes.find((c) => c.id === f.cliente_id);
-                  return (
-                    <div
-                      key={f.id}
-                      className="flex items-center justify-between px-4 py-3 text-sm"
-                      style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}
-                    >
-                      <span>{c ? c.nombre : "Cliente eliminado"}</span>
-                      <span className="font-mono" style={{ color: COLORS.dim }}>{money(f.monto)}</span>
-                      <FacturaBadge estado={f.estado} />
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === "clientes" && (
-          <div>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
-              <div>
-                <h1 className="font-display text-xl md:text-2xl font-semibold">Clientes</h1>
-                <p className="text-sm" style={{ color: COLORS.dim }}>{clientes.length} registrados</p>
+                <div className="flex flex-wrap gap-2">
+                  {!esCajero && (
+                    <Button onClick={() => setClientModal({})}>
+                      <UserPlus size={16} /> Agregar cliente
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={irABuscar}>
+                    <Search size={16} /> Buscar cliente
+                  </Button>
+                  <Button variant="ghost" onClick={() => { setFacturaFiltro("por_cobrar"); setTab("facturacion"); }}>
+                    <FileText size={16} /> Facturas por cobrar
+                  </Button>
+                </div>
               </div>
-              <div className="flex gap-2">
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                <KpiTile
+                  color={TILE.hoy}
+                  Icon={Clock}
+                  valor={money(ingresosHoy)}
+                  label="Ingresos hoy"
+                  onClick={() => { setFacturaFiltro("pagada"); setTab("facturacion"); }}
+                />
+                <KpiTile
+                  color={TILE.mes}
+                  Icon={CalendarDays}
+                  valor={money(ingresosMesActual)}
+                  label="Ingresos este mes"
+                  onClick={() => setTab("reportes")}
+                />
+                <KpiTile
+                  color={TILE.atraso}
+                  Icon={AlertTriangle}
+                  valor={`${totalActivos}/${clientesEnAtraso.length}`}
+                  label="Activos / con atraso"
+                  onClick={() => irAClientes("atraso")}
+                />
+                <KpiTile
+                  color={TILE.clientes}
+                  Icon={Users}
+                  valor={clientes.length}
+                  label="Clientes"
+                  onClick={() => irAClientes("lista")}
+                />
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4 mb-4">
+                <Seccion titulo="Clientes instalados" Icon={Wrench}>
+                  <Trio
+                    items={[
+                      { label: "Hoy", valor: instHoy },
+                      { label: "Este mes", valor: instMes },
+                      { label: "Este año", valor: instAnio },
+                    ]}
+                  />
+                </Seccion>
+                <Seccion titulo="Cobranza" Icon={Wallet}>
+                  <Trio
+                    items={[
+                      {
+                        label: "Por cobrar",
+                        valor: money(porCobrarMonto).replace("RD$ ", ""),
+                        color: COLORS.warn,
+                        onClick: () => { setFacturaFiltro("por_cobrar"); setTab("facturacion"); },
+                      },
+                      {
+                        label: "Facturas vencidas",
+                        valor: facturasVencidas.length,
+                        color: facturasVencidas.length ? COLORS.danger : COLORS.text,
+                        onClick: () => { setFacturaFiltro("vencida"); setTab("facturacion"); },
+                      },
+                      { label: "Prórrogas activas", valor: prorrogasActivas },
+                    ]}
+                  />
+                </Seccion>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <Seccion
+                  titulo="Clientes con atraso"
+                  Icon={AlertTriangle}
+                  accion={
+                    clientesEnAtraso.length > 0 && (
+                      <button className="text-xs" style={{ color: COLORS.accent }} onClick={() => irAClientes("atraso")}>
+                        Ver los {clientesEnAtraso.length}
+                      </button>
+                    )
+                  }
+                >
+                  {peoresAtrasos.length === 0 ? (
+                    <div className="p-6 text-sm text-center" style={{ color: COLORS.dim }}>
+                      Todos tus clientes están al día.
+                    </div>
+                  ) : (
+                    peoresAtrasos.map((c) => {
+                      const d = deudaPorCliente[c.id];
+                      const link = whatsappLink(c.telefono, mensajeRecordatorio(c, d.factura));
+                      return (
+                        <div
+                          key={c.id}
+                          className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                          style={{ borderTop: `1px solid ${COLORS.border}` }}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{c.nombre}</div>
+                            <div className="text-xs" style={{ color: COLORS.dim }}>
+                              {diasDeAtraso(d.factura)} días de atraso, {d.cantidad} factura{d.cantidad > 1 ? "s" : ""}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono text-sm" style={{ color: COLORS.danger }}>{money(d.monto)}</span>
+                            <IconoAccion title="Recordar pago por WhatsApp" color={COLORS.active} href={link}>
+                              <MessageCircle size={14} />
+                            </IconoAccion>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </Seccion>
+
+                <Seccion
+                  titulo="Últimos pagos"
+                  Icon={Receipt}
+                  accion={
+                    <button className="text-xs" style={{ color: COLORS.accent }} onClick={() => { setFacturaFiltro("pagada"); setTab("facturacion"); }}>
+                      Ver pagadas
+                    </button>
+                  }
+                >
+                  {ultimosPagos.length === 0 ? (
+                    <div className="p-6 text-sm text-center" style={{ color: COLORS.dim }}>
+                      Aquí aparecerán los cobros a medida que los registres.
+                    </div>
+                  ) : (
+                    ultimosPagos.map((f) => {
+                      const c = clientes.find((cl) => cl.id === f.cliente_id);
+                      const cuando = f.fecha_pago
+                        ? new Date(f.fecha_pago).toLocaleString("es-DO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+                        : f.periodo;
+                      return (
+                        <div
+                          key={f.id}
+                          className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                          style={{ borderTop: `1px solid ${COLORS.border}` }}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
+                            <div className="text-xs" style={{ color: COLORS.dim }}>
+                              {cuando}
+                              {f.forma_pago ? `, ${FORMAS_PAGO.find((x) => x.value === f.forma_pago)?.label || f.forma_pago}` : ""}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono text-sm" style={{ color: COLORS.active }}>{money(f.monto)}</span>
+                            <IconoAccion title="Ver recibo" color={COLORS.accent} onClick={() => setReciboModal(f)}>
+                              <Receipt size={14} />
+                            </IconoAccion>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </Seccion>
+              </div>
+            </div>
+          )}
+
+          {/* ---------- CLIENTES ---------- */}
+          {tab === "clientes" && (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                <div>
+                  <h1 className="font-display text-xl md:text-2xl font-semibold">Clientes</h1>
+                  <p className="text-sm" style={{ color: COLORS.dim }}>
+                    {clientes.length} registrados, {clientesEnAtraso.length} con atraso
+                  </p>
+                </div>
                 {!esCajero && (
-                  <>
+                  <div className="flex flex-wrap gap-2">
                     <Button variant="ghost" onClick={() => setImportModal(true)}>
                       <Upload size={16} /> Importar Excel/CSV
                     </Button>
@@ -1118,328 +1541,517 @@ export default function App() {
                     <Button onClick={() => setClientModal({})}>
                       <Plus size={16} /> Nuevo cliente
                     </Button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-1 mb-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                {[
+                  { id: "lista", label: "Lista de clientes", n: clientes.length },
+                  { id: "atraso", label: "Atraso de pago", n: clientesEnAtraso.length },
+                ].map((v) => {
+                  const activo = clientesVista === v.id;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => { setClientesVista(v.id); setPage(1); if (v.id === "atraso") setOrdenCliente("deuda_desc"); else setOrdenCliente("nombre_asc"); }}
+                      className="px-3 py-2 text-sm font-medium -mb-px"
+                      style={{
+                        color: activo ? COLORS.text : COLORS.dim,
+                        borderBottom: `2px solid ${activo ? COLORS.accent : "transparent"}`,
+                      }}
+                    >
+                      {v.label}{" "}
+                      <span
+                        className="rounded-full px-1.5 text-xs font-mono"
+                        style={{
+                          backgroundColor: v.id === "atraso" && v.n > 0 ? COLORS.danger + "33" : COLORS.panel2,
+                          color: v.id === "atraso" && v.n > 0 ? COLORS.danger : COLORS.dim,
+                        }}
+                      >
+                        {v.n}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                <select
+                  style={{ ...inputStyle, width: "auto" }}
+                  value={clienteFiltro}
+                  onChange={(e) => { setClienteFiltro(e.target.value); setPage(1); }}
+                >
+                  <option value="todos">Todos los estados</option>
+                  <option value="activo">Activos</option>
+                  <option value="moroso">Morosos</option>
+                  <option value="suspendido">Suspendidos</option>
+                  <option value="cancelado">Cancelados</option>
+                </select>
+                <select
+                  style={{ ...inputStyle, width: "auto" }}
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(e.target.value === "todos" ? "todos" : Number(e.target.value)); setPage(1); }}
+                >
+                  <option value={10}>Mostrar 10</option>
+                  <option value={25}>Mostrar 25</option>
+                  <option value={50}>Mostrar 50</option>
+                  <option value={100}>Mostrar 100</option>
+                  <option value="todos">Mostrar todos</option>
+                </select>
+                <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
+                <OrdenFlecha label="Nombre" campo="nombre" valor={ordenCliente} onChange={setOrdenCliente} />
+                {clientesVista === "atraso" && (
+                  <OrdenFlecha label="Deuda" campo="deuda" valor={ordenCliente} onChange={setOrdenCliente} />
+                )}
+                {search && (
+                  <button onClick={() => setSearch("")} className="text-xs underline" style={{ color: COLORS.accent }}>
+                    Quitar búsqueda "{search}"
+                  </button>
+                )}
+              </div>
+
+              <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}`, backgroundColor: COLORS.panel }}>
+                {filteredClients.length === 0 ? (
+                  <div className="p-8 text-sm text-center" style={{ color: COLORS.dim }}>
+                    {search
+                      ? `Ningún cliente coincide con "${search}".`
+                      : clientesVista === "atraso"
+                      ? "Ningún cliente tiene facturas vencidas."
+                      : "Todavía no hay clientes. Agrega el primero con Nuevo cliente."}
+                  </div>
+                ) : (
+                  <>
+                    {/* Tabla en computadora */}
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr style={{ color: COLORS.dim, backgroundColor: COLORS.panel2 }}>
+                            <th className="text-left font-medium px-3 py-2.5">Nombre</th>
+                            <th className="text-left font-medium px-3 py-2.5">Servicio</th>
+                            <th className="text-left font-medium px-3 py-2.5">IP</th>
+                            <th className="text-left font-medium px-3 py-2.5">Plan</th>
+                            {clientesVista === "atraso" && <th className="text-right font-medium px-3 py-2.5">Deuda</th>}
+                            <th className="text-left font-medium px-3 py-2.5">Corte</th>
+                            <th className="text-left font-medium px-3 py-2.5">Estado</th>
+                            <th className="text-left font-medium px-3 py-2.5">Contacto</th>
+                            {!esCajero && <th className="text-right font-medium px-3 py-2.5">Administrar</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {clientesPagina.map((c) => {
+                            const plan = planById(c.plan_id);
+                            const deuda = deudaPorCliente[c.id];
+                            const colorEstado =
+                              { activo: COLORS.active, moroso: COLORS.danger, suspendido: COLORS.warn }[c.estado] || COLORS.dim;
+                            return (
+                              <tr
+                                key={c.id}
+                                style={{
+                                  borderTop: `1px solid ${COLORS.border}`,
+                                  backgroundColor: deuda ? COLORS.danger + "12" : "transparent",
+                                }}
+                              >
+                                <td className="px-3 py-2.5">
+                                  <div className="font-medium">{c.nombre}</div>
+                                  {c.direccion && (
+                                    <div className="text-xs truncate" style={{ color: COLORS.dim, maxWidth: 240 }}>{c.direccion}</div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <span className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap">
+                                    <span style={{ width: 7, height: 7, borderRadius: 9, backgroundColor: colorEstado }} />
+                                    {c.pppoe_usuario || "—"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{c.ip_asignada || "—"}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap">{plan ? plan.nombre : <span style={{ color: COLORS.dim }}>Sin plan</span>}</td>
+                                {clientesVista === "atraso" && (
+                                  <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                                    <div className="font-mono" style={{ color: COLORS.danger }}>{deuda ? money(deuda.monto) : "—"}</div>
+                                    {deuda && (
+                                      <div className="text-xs" style={{ color: COLORS.dim }}>{diasDeAtraso(deuda.factura)} días</div>
+                                    )}
+                                  </td>
+                                )}
+                                <td className="px-3 py-2.5"><CicloBadge ciclo={c.ciclo} /></td>
+                                <td className="px-3 py-2.5"><EstadoBadge estado={c.estado} /></td>
+                                <td className="px-3 py-2.5">
+                                  <div className="flex gap-1">{renderContacto(c)}</div>
+                                </td>
+                                {!esCajero && (
+                                  <td className="px-3 py-2.5">
+                                    <div className="flex justify-end gap-1">
+                                      <IconoAccion title="Editar" color={COLORS.accent} onClick={() => editarCliente(c)}>
+                                        <Pencil size={14} />
+                                      </IconoAccion>
+                                      <IconoAccion title="Eliminar" color={COLORS.danger} onClick={() => eliminarCliente(c)}>
+                                        <Trash2 size={14} />
+                                      </IconoAccion>
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Tarjetas en celular */}
+                    <div className="md:hidden">
+                      {clientesPagina.map((c, i) => {
+                        const plan = planById(c.plan_id);
+                        const deuda = deudaPorCliente[c.id];
+                        return (
+                          <div
+                            key={c.id}
+                            className="px-4 py-3"
+                            style={{
+                              borderTop: i > 0 ? `1px solid ${COLORS.border}` : "none",
+                              backgroundColor: deuda ? COLORS.danger + "12" : "transparent",
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium">{c.nombre}</div>
+                                <div className="text-xs" style={{ color: COLORS.dim }}>
+                                  {plan ? plan.nombre : "Sin plan"}
+                                  {c.ip_asignada ? `, ${c.ip_asignada}` : ""}
+                                </div>
+                              </div>
+                              <EstadoBadge estado={c.estado} />
+                            </div>
+                            {deuda && (
+                              <div className="text-xs mt-1" style={{ color: COLORS.danger }}>
+                                Debe {money(deuda.monto)}, {diasDeAtraso(deuda.factura)} días de atraso
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between mt-2">
+                              <div className="flex gap-1">{renderContacto(c)}</div>
+                              {!esCajero && (
+                                <div className="flex gap-1">
+                                  <IconoAccion title="Editar" color={COLORS.accent} onClick={() => editarCliente(c)}>
+                                    <Pencil size={14} />
+                                  </IconoAccion>
+                                  <IconoAccion title="Eliminar" color={COLORS.danger} onClick={() => eliminarCliente(c)}>
+                                    <Trash2 size={14} />
+                                  </IconoAccion>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Paginación */}
+                    <div
+                      className="flex items-center justify-between gap-3 px-4 py-3 text-xs"
+                      style={{ borderTop: `1px solid ${COLORS.border}`, color: COLORS.dim }}
+                    >
+                      <span>
+                        Mostrando {inicio + 1} a {inicio + clientesPagina.length} de {filteredClients.length}
+                      </span>
+                      {totalPaginas > 1 && (
+                        <div className="flex items-center gap-2">
+                          <IconoAccion
+                            title="Página anterior"
+                            color={COLORS.accent}
+                            onClick={paginaActual > 1 ? () => setPage(paginaActual - 1) : null}
+                          >
+                            <ChevronLeft size={14} />
+                          </IconoAccion>
+                          <span style={{ color: COLORS.text }}>{paginaActual} / {totalPaginas}</span>
+                          <IconoAccion
+                            title="Página siguiente"
+                            color={COLORS.accent}
+                            onClick={paginaActual < totalPaginas ? () => setPage(paginaActual + 1) : null}
+                          >
+                            <ChevronRight size={14} />
+                          </IconoAccion>
+                        </div>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
             </div>
+          )}
 
-            <div className="flex flex-wrap items-center gap-3 mb-4">
-              <div className="relative max-w-xs">
-                <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
-                <input
-                  style={{ ...inputStyle, paddingLeft: 32 }}
-                  placeholder="Buscar cliente…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+          {tab === "planes" && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h1 className="font-display text-xl md:text-2xl font-semibold">Planes</h1>
+                <Button onClick={() => setPlanModal({})}>
+                  <Plus size={16} /> Nuevo plan
+                </Button>
               </div>
-              <OrdenFlecha label="Nombre" campo="nombre" valor={ordenCliente} onChange={setOrdenCliente} />
-            </div>
-
-            {clienteFiltro !== "todos" && (
-              <div className="flex items-center gap-2 mb-4">
-                <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
-                <EstadoBadge estado={clienteFiltro} />
-                <button onClick={() => setClienteFiltro("todos")} className="text-xs underline" style={{ color: COLORS.accent }}>
-                  Quitar filtro
-                </button>
+              <div className="flex items-center gap-4 mb-4">
+                <OrdenFlecha label="Nombre" campo="nombre" valor={ordenPlan} onChange={setOrdenPlan} />
+                <OrdenFlecha label="Precio" campo="precio" valor={ordenPlan} onChange={setOrdenPlan} />
               </div>
-            )}
-
-            <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
-              {filteredClients.length === 0 ? (
-                <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
-                  Sin resultados.
-                </div>
-              ) : (
-                filteredClients.map((c) => {
-                  const plan = planById(c.plan_id);
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {planes.slice().sort((a, b) => {
+                  if (ordenPlan === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
+                  if (ordenPlan === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
+                  if (ordenPlan === "precio_asc") return Number(a.precio || 0) - Number(b.precio || 0);
+                  if (ordenPlan === "precio_desc") return Number(b.precio || 0) - Number(a.precio || 0);
+                  return 0;
+                }).map((p) => {
+                  const cantidad = clientes.filter((c) => c.plan_id === p.id).length;
                   return (
                     <div
-                      key={c.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3"
-                      style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}
+                      key={p.id}
+                      className="rounded-xl p-4"
+                      style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
                     >
-                      <div>
-                        <div className="text-sm font-medium">{c.nombre}</div>
-                        <div className="text-xs" style={{ color: COLORS.dim }}>
-                          {c.telefono} · {c.direccion} · {plan ? plan.nombre : "Sin plan"} · Corte {c.ciclo === 30 ? "fin de mes" : "día 15"}
+                      <div className="flex items-center justify-between mb-2">
+                        <Wifi size={16} color={COLORS.accent} />
+                        <div className="flex gap-2">
+                          <button onClick={() => setPlanModal(p)} style={{ color: COLORS.dim }}>
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            onClick={() => window.confirm(`¿Eliminar el plan ${p.nombre}?`) && deletePlan(p.id)}
+                            style={{ color: COLORS.dim }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <EstadoBadge estado={c.estado} />
-                        <CicloBadge ciclo={c.ciclo} />
-                        {!esCajero && (
-                          <>
+                      <div className="text-sm font-medium mb-1">{p.nombre}</div>
+                      <div className="text-xs mb-2" style={{ color: COLORS.dim }}>
+                        {p.velocidad ? `${p.velocidad}, ` : ""}{cantidad} cliente{cantidad === 1 ? "" : "s"}
+                      </div>
+                      <div className="font-mono text-lg" style={{ color: COLORS.text }}>{money(p.precio)}<span className="text-xs" style={{ color: COLORS.dim }}>/mes</span></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {tab === "facturacion" && (
+            <div>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
+                <h1 className="font-display text-xl md:text-2xl font-semibold">Facturación</h1>
+                <div className="flex flex-wrap gap-2">
+                  {!esCajero && (
+                    <>
+                      <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
+                        <Upload size={16} /> Importar historial
+                      </Button>
+                      <Button variant="ghost" onClick={() => setImportPagosModal(true)}>
+                        <Wallet size={16} /> Reconciliar pagos
+                      </Button>
+                      <Button variant="ghost" onClick={() => setImportHistorialModal(true)}>
+                        <Download size={16} /> Historial de ingresos
+                      </Button>
+                      <Button onClick={() => setInvoiceModal({})}>
+                        <Plus size={16} /> Nueva factura
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+              {facturaFiltro !== "todas" && (
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
+                  {facturaFiltro === "por_cobrar" ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+                      style={{ color: COLORS.warn, backgroundColor: COLORS.warn + "1A", border: `1px solid ${COLORS.warn}40` }}
+                    >
+                      Por cobrar (pendientes + vencidas)
+                    </span>
+                  ) : (
+                    <FacturaBadge estado={facturaFiltro} />
+                  )}
+                  <button onClick={() => setFacturaFiltro("todas")} className="text-xs underline" style={{ color: COLORS.accent }}>
+                    Quitar filtro
+                  </button>
+                </div>
+              )}
+              <div className="flex items-center gap-4 mb-3">
+                <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
+                <OrdenFlecha label="Cliente" campo="cliente" valor={ordenFactura} onChange={setOrdenFactura} />
+                <OrdenFlecha label="Monto" campo="monto" valor={ordenFactura} onChange={setOrdenFactura} />
+                <OrdenFlecha label="Vencimiento" campo="vencimiento" valor={ordenFactura} onChange={setOrdenFactura} />
+              </div>
+              <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+                {(() => {
+                  const facturasFiltradas = facturas
+                    .slice()
+                    .reverse()
+                    .filter((f) => (esCajero ? f.estado !== "pagada" || f.cobrado_por === miUserId : true))
+                    .filter((f) => {
+                      if (facturaFiltro === "todas") return true;
+                      const visual = estadoVisual(f, new Date());
+                      if (facturaFiltro === "por_cobrar") return visual !== "pagada";
+                      return visual === facturaFiltro;
+                    })
+                    .sort((a, b) => {
+                      if (!ordenFactura) return 0;
+                      if (ordenFactura === "cliente_asc" || ordenFactura === "cliente_desc") {
+                        const na = clientes.find((c) => c.id === a.cliente_id)?.nombre || "";
+                        const nb = clientes.find((c) => c.id === b.cliente_id)?.nombre || "";
+                        return ordenFactura === "cliente_asc" ? na.localeCompare(nb) : nb.localeCompare(na);
+                      }
+                      if (ordenFactura === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
+                      if (ordenFactura === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
+                      if (ordenFactura === "vencimiento_asc") return (a.fecha_vencimiento || "").localeCompare(b.fecha_vencimiento || "");
+                      if (ordenFactura === "vencimiento_desc") return (b.fecha_vencimiento || "").localeCompare(a.fecha_vencimiento || "");
+                      return 0;
+                    });
+                  if (facturasFiltradas.length === 0) {
+                    return (
+                      <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
+                        No hay facturas que coincidan.
+                      </div>
+                    );
+                  }
+                  return facturasFiltradas.map((f) => {
+                    const c = clientes.find((c) => c.id === f.cliente_id);
+                    const visual = estadoVisual(f, new Date());
+                    const mensaje = c ? mensajeRecordatorio(c, f) : "";
+                    const link = c ? whatsappLink(c.telefono, mensaje) : null;
+                    return (
+                      <div
+                        key={f.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3"
+                        style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}
+                      >
+                        <div>
+                          <div className="text-sm font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
+                          <div className="text-xs" style={{ color: COLORS.dim }}>
+                            Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
+                            {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="font-mono text-sm">{money(f.monto)}</span>
+                          <FacturaBadge estado={visual} />
+                          {f.estado !== "pagada" && (
+                            <Button variant="ghost" onClick={() => setPagoModal(f)}>
+                              Marcar pagada
+                            </Button>
+                          )}
+                          {f.estado !== "pagada" && !esCajero && (
                             <button
-                              onClick={() =>
-                                setClientModal({
-                                  id: c.id,
-                                  nombre: c.nombre,
-                                  telefono: c.telefono,
-                                  direccion: c.direccion,
-                                  planId: c.plan_id,
-                                  estado: c.estado,
-                                  lat: c.lat,
-                                  lng: c.lng,
-                                  ciclo: c.ciclo,
-                                  pppoe_usuario: c.pppoe_usuario,
-                                  pppoe_secret: c.pppoe_secret,
-                                  ip_asignada: c.ip_asignada,
-                                  equipo: c.equipo,
-                                  cedula: c.cedula,
-                                  fecha_instalacion: c.fecha_instalacion,
-                                })
-                              }
+                              onClick={() => setProrrogaModal(f)}
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                              style={{ color: COLORS.warn, border: `1px solid ${COLORS.warn}40`, backgroundColor: COLORS.warn + "1A" }}
+                            >
+                              <CalendarPlus size={13} /> Prórroga
+                            </button>
+                          )}
+                          {f.estado !== "pagada" && link && (
+                            <a
+                              href={link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                              style={{ color: COLORS.active, border: `1px solid ${COLORS.active}40`, backgroundColor: COLORS.active + "1A" }}
+                            >
+                              <MessageCircle size={13} /> Recordar
+                            </a>
+                          )}
+                          <button
+                            onClick={() => setReciboModal(f)}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                            style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
+                          >
+                            <Receipt size={13} /> Recibo
+                          </button>
+                          {!esCajero && (
+                            <button
+                              onClick={() => window.confirm("¿Eliminar esta factura?") && deleteInvoice(f.id)}
                               style={{ color: COLORS.dim }}
                             >
-                              <Pencil size={15} />
-                            </button>
-                            <button onClick={() => deleteClient(c.id)} style={{ color: COLORS.dim }}>
                               <Trash2 size={15} />
                             </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === "planes" && (
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h1 className="font-display text-xl md:text-2xl font-semibold">Planes</h1>
-              <Button onClick={() => setPlanModal({})}>
-                <Plus size={16} /> Nuevo plan
-              </Button>
-            </div>
-            <div className="flex items-center gap-4 mb-4">
-              <OrdenFlecha label="Nombre" campo="nombre" valor={ordenPlan} onChange={setOrdenPlan} />
-              <OrdenFlecha label="Precio" campo="precio" valor={ordenPlan} onChange={setOrdenPlan} />
-            </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {planes.slice().sort((a, b) => {
-                if (ordenPlan === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
-                if (ordenPlan === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
-                if (ordenPlan === "precio_asc") return Number(a.precio || 0) - Number(b.precio || 0);
-                if (ordenPlan === "precio_desc") return Number(b.precio || 0) - Number(a.precio || 0);
-                return 0;
-              }).map((p) => (
-                <div
-                  key={p.id}
-                  className="rounded-xl p-4"
-                  style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <Wifi size={16} color={COLORS.accent} />
-                    <div className="flex gap-2">
-                      <button onClick={() => setPlanModal(p)} style={{ color: COLORS.dim }}>
-                        <Pencil size={14} />
-                      </button>
-                      <button onClick={() => deletePlan(p.id)} style={{ color: COLORS.dim }}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="text-sm font-medium mb-1">{p.nombre}</div>
-                  <div className="text-xs mb-2" style={{ color: COLORS.dim }}>{p.velocidad}</div>
-                  <div className="font-mono text-lg" style={{ color: COLORS.text }}>{money(p.precio)}<span className="text-xs" style={{ color: COLORS.dim }}>/mes</span></div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {tab === "facturacion" && (
-          <div>
-            <div className="flex items-center justify-between mb-5">
-              <h1 className="font-display text-xl md:text-2xl font-semibold">Facturación</h1>
-              <div className="flex gap-2">
-                {!esCajero && (
-                  <>
-                    <Button variant="ghost" onClick={() => setImportFacturasModal(true)}>
-                      <Upload size={16} /> Importar historial
-                    </Button>
-                    <Button variant="ghost" onClick={() => setImportPagosModal(true)}>
-                      <Wallet size={16} /> Reconciliar pagos
-                    </Button>
-                    <Button variant="ghost" onClick={() => setImportHistorialModal(true)}>
-                      <Download size={16} /> Historial de ingresos
-                    </Button>
-                    <Button onClick={() => setInvoiceModal({})}>
-                      <Plus size={16} /> Nueva factura
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-            {facturaFiltro !== "todas" && (
-              <div className="flex items-center gap-2 mb-4">
-                <span className="text-xs" style={{ color: COLORS.dim }}>Mostrando solo:</span>
-                {facturaFiltro === "por_cobrar" ? (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                    style={{ color: COLORS.warn, backgroundColor: COLORS.warn + "1A", border: `1px solid ${COLORS.warn}40` }}
-                  >
-                    Por cobrar (pendientes + vencidas)
-                  </span>
-                ) : (
-                  <FacturaBadge estado={facturaFiltro} />
-                )}
-                <button onClick={() => setFacturaFiltro("todas")} className="text-xs underline" style={{ color: COLORS.accent }}>
-                  Quitar filtro
-                </button>
-              </div>
-            )}
-            <div className="flex items-center gap-4 mb-3">
-              <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
-              <OrdenFlecha label="Cliente" campo="cliente" valor={ordenFactura} onChange={setOrdenFactura} />
-              <OrdenFlecha label="Monto" campo="monto" valor={ordenFactura} onChange={setOrdenFactura} />
-              <OrdenFlecha label="Vencimiento" campo="vencimiento" valor={ordenFactura} onChange={setOrdenFactura} />
-            </div>
-            <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
-              {(() => {
-                const facturasFiltradas = facturas
-                  .slice()
-                  .reverse()
-                  .filter((f) => (esCajero ? f.estado !== "pagada" || f.cobrado_por === miUserId : true))
-                  .filter((f) => {
-                    if (facturaFiltro === "todas") return true;
-                    const visual = estadoVisual(f, new Date());
-                    if (facturaFiltro === "por_cobrar") return visual !== "pagada";
-                    return visual === facturaFiltro;
-                  })
-                  .sort((a, b) => {
-                    if (!ordenFactura) return 0;
-                    if (ordenFactura === "cliente_asc" || ordenFactura === "cliente_desc") {
-                      const na = clientes.find((c) => c.id === a.cliente_id)?.nombre || "";
-                      const nb = clientes.find((c) => c.id === b.cliente_id)?.nombre || "";
-                      return ordenFactura === "cliente_asc" ? na.localeCompare(nb) : nb.localeCompare(na);
-                    }
-                    if (ordenFactura === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
-                    if (ordenFactura === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
-                    if (ordenFactura === "vencimiento_asc") return (a.fecha_vencimiento || "").localeCompare(b.fecha_vencimiento || "");
-                    if (ordenFactura === "vencimiento_desc") return (b.fecha_vencimiento || "").localeCompare(a.fecha_vencimiento || "");
-                    return 0;
-                  });
-                if (facturasFiltradas.length === 0) {
-                  return (
-                    <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
-                      No hay facturas que coincidan.
-                    </div>
-                  );
-                }
-                return facturasFiltradas.map((f) => {
-                  const c = clientes.find((c) => c.id === f.cliente_id);
-                  const visual = estadoVisual(f, new Date());
-                  const mensaje = c ? mensajeRecordatorio(c, f) : "";
-                  const link = c ? whatsappLink(c.telefono, mensaje) : null;
-                  return (
-                    <div
-                      key={f.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3"
-                      style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}
-                    >
-                      <div>
-                        <div className="text-sm font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
-                        <div className="text-xs" style={{ color: COLORS.dim }}>
-                          Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
-                          {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
+                          )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-sm">{money(f.monto)}</span>
-                        <FacturaBadge estado={visual} />
-                        {f.estado !== "pagada" && (
-                          <Button variant="ghost" onClick={() => setPagoModal(f)}>
-                            Marcar pagada
-                          </Button>
-                        )}
-                        {f.estado !== "pagada" && !esCajero && (
-                          <button
-                            onClick={() => setProrrogaModal(f)}
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
-                            style={{ color: COLORS.warn, border: `1px solid ${COLORS.warn}40`, backgroundColor: COLORS.warn + "1A" }}
-                          >
-                            <CalendarPlus size={13} /> Prórroga
-                          </button>
-                        )}
-                        {f.estado !== "pagada" && link && (
-                          <a
-                            href={link}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
-                            style={{ color: COLORS.active, border: `1px solid ${COLORS.active}40`, backgroundColor: COLORS.active + "1A" }}
-                          >
-                            <MessageCircle size={13} /> Recordar
-                          </a>
-                        )}
-                        <button
-                          onClick={() => setReciboModal(f)}
-                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
-                          style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
-                        >
-                          <Receipt size={13} /> Recibo
-                        </button>
-                        {!esCajero && (
-                          <button onClick={() => deleteInvoice(f.id)} style={{ color: COLORS.dim }}>
-                            <Trash2 size={15} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
+                    );
+                  });
+                })()}
+              </div>
             </div>
-          </div>
-        )}
-        {tab === "reportes" && (
-          <ReportesTab
-            clientes={clientes}
-            planes={planes}
-            facturas={facturas}
-            movimientos={movimientos}
-            historialMensual={historialMensual}
-            onGuardarHistorialMes={saveHistorialMes}
-            onEliminarHistorialMes={deleteHistorialMes}
-            onVerFacturas={(filtro) => {
-              setFacturaFiltro(filtro);
-              setTab("facturacion");
-            }}
-          />
-        )}
-        {tab === "mapa" && <MapaTab clientes={clientes} planById={planById} onImportar={() => setImportUbicacionModal(true)} />}
-        {tab === "caja" && (
-          <CajaTab
-            movimientos={movimientos}
-            onNuevo={() => setMovimientoModal({})}
-            onEditar={(m) => setMovimientoModal(m)}
-            onEliminar={deleteMovimiento}
-            orden={ordenCaja}
-            onOrden={setOrdenCaja}
-          />
-        )}
-        {tab === "puntos-pago" && esAdmin && (
-          <PuntosDePagoTab
-            puntosDePago={puntosDePago}
-            liquidaciones={liquidaciones}
-            facturas={facturas}
-            onGuardarComision={guardarComision}
-            onLiquidar={liquidarCajero}
-            onCrear={crearPuntoDePago}
-          />
-        )}
-       {tab === "configuracion" && esAdmin && (
-  <ConfiguracionTab config={config} onGuardar={guardarConfig} session={session} />
-)}
-</main>
- {clientModal && (
+          )}
+          {tab === "reportes" && (
+            <ReportesTab
+              clientes={clientes}
+              planes={planes}
+              facturas={facturas}
+              movimientos={movimientos}
+              historialMensual={historialMensual}
+              onGuardarHistorialMes={saveHistorialMes}
+              onEliminarHistorialMes={deleteHistorialMes}
+              onVerFacturas={(filtro) => {
+                setFacturaFiltro(filtro);
+                setTab("facturacion");
+              }}
+            />
+          )}
+          {tab === "mapa" && <MapaTab clientes={clientes} planById={planById} onImportar={() => setImportUbicacionModal(true)} />}
+          {tab === "caja" && (
+            <CajaTab
+              movimientos={movimientos}
+              onNuevo={() => setMovimientoModal({})}
+              onEditar={(m) => setMovimientoModal(m)}
+              onEliminar={deleteMovimiento}
+              orden={ordenCaja}
+              onOrden={setOrdenCaja}
+            />
+          )}
+          {tab === "puntos-pago" && esAdmin && (
+            <PuntosDePagoTab
+              puntosDePago={puntosDePago}
+              liquidaciones={liquidaciones}
+              facturas={facturas}
+              onGuardarComision={guardarComision}
+              onLiquidar={liquidarCajero}
+              onCrear={crearPuntoDePago}
+            />
+          )}
+          {tab === "configuracion" && esAdmin && (
+            <ConfiguracionTab config={config} onGuardar={guardarConfig} session={session} />
+          )}
+        </main>
+      </div>
+
+      {/* ---------- Menú inferior (celular) ---------- */}
+      <nav
+        className="md:hidden fixed bottom-0 left-0 right-0 flex overflow-x-auto no-print"
+        style={{ backgroundColor: COLORS.nav, borderTop: `1px solid ${COLORS.border}`, zIndex: 1100 }}
+      >
+        {NAV.map(({ id, label, Icon }) => {
+          const activo = tab === id;
+          return (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className="relative flex flex-col items-center gap-1 px-2 py-2 text-xs font-medium shrink-0"
+              style={{ minWidth: 72, color: activo ? COLORS.accent : COLORS.dim, boxShadow: activo ? `inset 0 2px 0 ${COLORS.accent}` : "none" }}
+            >
+              <Icon size={20} />
+              {label}
+              {id === "clientes" && clientesEnAtraso.length > 0 && (
+                <span
+                  className="absolute rounded-full px-1 font-mono"
+                  style={{ top: 4, right: 14, fontSize: 10, backgroundColor: COLORS.danger, color: "#fff" }}
+                >
+                  {clientesEnAtraso.length}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {clientModal && (
         <ClientForm
           initial={clientModal}
           planes={planes}
@@ -1548,7 +2160,7 @@ const FORMAS_PAGO = [
 
 function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, formatoDefault, onClose }) {
   const [formato, setFormato] = useState(formatoDefault || "termica"); // "termica" o "carta"
-  const fecha = new Date();
+  const fecha = factura.fecha_pago ? new Date(factura.fecha_pago) : new Date();
   const pagada = factura.estado === "pagada";
   const numeroRecibo = String(factura.id).replace(/\D/g, "").slice(-5).padStart(5, "0") || String(factura.id).slice(-5);
   const empresaMostrar = empresa || EMPRESA_DEFAULT;
@@ -1605,7 +2217,7 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: sz(formato === "termica" ? 13 : 14), color: "#555", marginBottom: 6 }}>
-            <span>Fecha: {fecha.toLocaleDateString("es-MX")} {fecha.toLocaleTimeString("es-MX")}</span>
+            <span>Fecha: {fecha.toLocaleDateString("es-DO")} {fecha.toLocaleTimeString("es-DO")}</span>
             <span>Recibo N° {numeroRecibo}</span>
           </div>
 
@@ -2109,7 +2721,7 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar, orden, onOrden })
                   {m.tipo === "gasto" ? "-" : "+"}{money(m.monto)}
                 </span>
                 <button onClick={() => onEditar(m)} style={{ color: COLORS.dim }}><Pencil size={15} /></button>
-                <button onClick={() => onEliminar(m.id)} style={{ color: COLORS.dim }}><Trash2 size={15} /></button>
+                <button onClick={() => window.confirm("¿Eliminar este movimiento?") && onEliminar(m.id)} style={{ color: COLORS.dim }}><Trash2 size={15} /></button>
               </div>
             </div>
           ))
@@ -2196,7 +2808,7 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
     while (cursor <= limite && meses.length < 24) {
       meses.push({
         key: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
-        label: cursor.toLocaleDateString("es-MX", { month: "short", year: "2-digit" }),
+        label: cursor.toLocaleDateString("es-DO", { month: "short", year: "2-digit" }),
       });
       cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
     }
@@ -2211,7 +2823,7 @@ function ReportesTab({ clientes, planes, facturas, movimientos, historialMensual
   } else {
     for (let i = 5; i >= 0; i--) {
       const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-      meses.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleDateString("es-MX", { month: "short" }) });
+      meses.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleDateString("es-DO", { month: "short" }) });
     }
   }
   const ingresosPorMes = meses.map((m) => {
@@ -2561,7 +3173,7 @@ function ImportForm({ planes, onCancel, onEnsurePlanes, onImport }) {
     setRows(results.data);
     const erroresDetectados = (results.errors || []).length;
     setFilasConError(erroresDetectados);
-   const auto = {};
+    const auto = {};
     const usadas = new Set();
     CAMPOS_IMPORTABLES.forEach((c) => {
       const match = cols.find((h) => !usadas.has(h) && (h.toLowerCase().includes(c.key.replace("_", "")) || h.toLowerCase().includes(c.label.toLowerCase().split(" ")[0])));
@@ -3576,7 +4188,7 @@ function ConfiguracionTab({ config, onGuardar, session }) {
   };
   const formatoFecha = (iso) => {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
+    return new Date(iso).toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" });
   };
 
   return (
@@ -3632,7 +4244,7 @@ function ConfiguracionTab({ config, onGuardar, session }) {
         </div>
         <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
           Todos los días se genera un respaldo automático de clientes, planes, facturas, caja y configuración.
-          Se conservan los últimos 30 días. Podés generar uno extra antes de una importación grande.
+          Se conservan los últimos 30 días. Puedes generar uno extra antes de una importación grande.
         </p>
         {errorBackup && (
           <div
@@ -3658,8 +4270,8 @@ function ConfiguracionTab({ config, onGuardar, session }) {
                   <div style={{ color: COLORS.text }}>{formatoFecha(b.creado)}</div>
                   <div style={{ color: COLORS.dim }}>{formatoTamano(b.tamano)}</div>
                 </div>
-                {b.url ? (<a
-                  
+                {b.url ? (
+                  <a
                     href={b.url}
                     className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 font-medium"
                     style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
@@ -3682,6 +4294,7 @@ function ConfiguracionTab({ config, onGuardar, session }) {
     </div>
   );
 }
+
 function ClientForm({ initial, planes, onCancel, onSave }) {
   const [form, setForm] = useState({
     id: initial.id,
@@ -3804,7 +4417,7 @@ function PlanForm({ initial, onCancel, onSave }) {
       <Field label="Velocidad">
         <input style={inputStyle} placeholder="Ej. 30 Mbps" value={form.velocidad} onChange={(e) => setForm({ ...form, velocidad: e.target.value })} />
       </Field>
-      <Field label="Precio mensual (MXN)">
+      <Field label="Precio mensual (RD$)">
         <input type="number" style={inputStyle} value={form.precio} onChange={(e) => setForm({ ...form, precio: e.target.value })} />
       </Field>
       <div className="flex justify-end gap-2 mt-4">
@@ -3846,7 +4459,7 @@ function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
       <Field label="Periodo">
         <input style={inputStyle} placeholder="Ej. Julio 2026" value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
       </Field>
-      <Field label="Monto (MXN)">
+      <Field label="Monto (RD$)">
         <input type="number" style={inputStyle} value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} />
       </Field>
       <Field label="Fecha de vencimiento">
