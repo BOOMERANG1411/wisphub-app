@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import {
   LayoutDashboard,
@@ -490,6 +490,11 @@ export default function App() {
   const [reciboModal, setReciboModal] = useState(null);
   const [migracionModal, setMigracionModal] = useState(false);
 
+  // Supabase renueva la sesión sola cada cierto tiempo (y al volver a la pestaña).
+  // Eso NO debe recargar la app: solo recargamos si cambia el usuario.
+  const usuarioId = session?.user?.id;
+  const yaCargo = useRef(false);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
@@ -518,7 +523,8 @@ export default function App() {
   };
 
   const loadAll = useCallback(async () => {
-    setLoading(true);
+    // La pantalla de "Cargando…" solo aparece la primera vez; después se actualiza en silencio.
+    if (!yaCargo.current) setLoading(true);
     setErrorMsg("");
     const [c, p, f, m, hm] = await Promise.all([
       fetchTodo("clientes", "nombre", true),
@@ -540,6 +546,7 @@ export default function App() {
     setMovimientos(m.data || []);
     setHistorialMensual(hm.data || []);
     setLoading(false);
+    yaCargo.current = true;
   }, []);
 
   // Revisa si a algún cliente ya le toca factura este ciclo y, si no existe todavía, la crea.
@@ -573,16 +580,19 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (session) {
-      loadAll();
-      supabase
-        .from("perfiles")
-        .select("*")
-        .eq("user_id", session.user.id)
-        .maybeSingle()
-        .then(({ data }) => setPerfil(data || { rol: "sin_acceso", nombre: session.user.email }));
+    if (!usuarioId) {
+      yaCargo.current = false;
+      return;
     }
-  }, [session, loadAll]);
+    loadAll();
+    supabase
+      .from("perfiles")
+      .select("*")
+      .eq("user_id", usuarioId)
+      .maybeSingle()
+      .then(({ data }) => setPerfil(data || { rol: "sin_acceso", nombre: session?.user?.email }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usuarioId, loadAll]);
 
   // Los cajeros no tienen acceso al Panel: al entrar los mandamos a su primera área permitida.
   useEffect(() => {
@@ -736,8 +746,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (session && perfil && perfil.rol !== "cajero") cargarPuntosDePago();
-  }, [session, perfil, cargarPuntosDePago]);
+    if (usuarioId && perfil && perfil.rol !== "cajero") cargarPuntosDePago();
+  }, [usuarioId, perfil?.rol, cargarPuntosDePago]);
 
   const [config, setConfig] = useState(null);
 
@@ -747,8 +757,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (session) cargarConfig();
-  }, [session, cargarConfig]);
+    if (usuarioId) cargarConfig();
+  }, [usuarioId, cargarConfig]);
 
   const guardarConfig = async (nuevaConfig) => {
     const { error } = await supabase.from("configuracion").upsert({ id: 1, ...nuevaConfig });
@@ -5309,7 +5319,8 @@ function ConfiguracionTab({ config, onGuardar, session }) {
     } finally {
       setCargandoBackups(false);
     }
-  }, [session]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id]);
 
   useEffect(() => {
     cargarBackups();
