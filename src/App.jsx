@@ -1397,7 +1397,7 @@ export default function App() {
                 return (
                   <button
                     key={id}
-                    onClick={() => setTab(id)}
+                    onClick={() => { setTab(id); setSearch(""); }}
                     className="w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium mb-0.5"
                     style={{
                       backgroundColor: activo ? COLORS.accent + "26" : "transparent",
@@ -1444,13 +1444,20 @@ export default function App() {
               <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
               <input
                 id="buscador-global"
+                type="search"
+                autoComplete="off"
                 style={{ ...inputStyle, paddingLeft: 32, borderRadius: 999 }}
-                placeholder="Buscar cliente, usuario PPPoE o IP"
+                placeholder={
+                  tab === "facturacion"
+                    ? "Buscar factura: cliente, número de factura o IP"
+                    : "Buscar cliente, usuario PPPoE o IP"
+                }
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
                   setPage(1);
-                  if (tab !== "clientes") setTab("clientes");
+                  // En Facturación busca facturas ahí mismo; en las demás pantallas lleva a Clientes.
+                  if (tab !== "clientes" && tab !== "facturacion") setTab("clientes");
                 }}
               />
             </div>
@@ -2019,6 +2026,17 @@ export default function App() {
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-4 mb-3">
+                <div className="relative" style={{ minWidth: 240 }}>
+                  <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
+                  <input
+                    type="search"
+                    autoComplete="off"
+                    style={{ ...inputStyle, paddingLeft: 32 }}
+                    placeholder="Buscar cliente o # de factura"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
                 {!esCajero && (
                   <select
                     style={{ ...inputStyle, width: "auto" }}
@@ -2048,6 +2066,15 @@ export default function App() {
                     .slice()
                     .reverse()
                     .filter((f) => (esCajero ? f.estado !== "pagada" || f.cobrado_por === miUserId : true))
+                    .filter((f) => {
+                      const qf = normKey(search).replace(/^#/, "");
+                      if (!qf) return true;
+                      const c = clientes.find((x) => x.id === f.cliente_id);
+                      return (
+                        String(f.numero_wisphub || "") === qf ||
+                        [c?.nombre, c?.pppoe_usuario, c?.ip_asignada, c?.telefono].some((v) => normKey(v).includes(qf))
+                      );
+                    })
                     .filter((f) => {
                       if (esCajero || cobradorFiltro === "todos") return true;
                       if (f.estado !== "pagada") return false;
@@ -2227,7 +2254,7 @@ export default function App() {
           return (
             <button
               key={id}
-              onClick={() => setTab(id)}
+              onClick={() => { setTab(id); setSearch(""); }}
               className="relative flex flex-col items-center gap-1 px-2 py-2 text-xs font-medium shrink-0"
               style={{ minWidth: 72, color: activo ? COLORS.accent : COLORS.dim, boxShadow: activo ? `inset 0 2px 0 ${COLORS.accent}` : "none" }}
             >
