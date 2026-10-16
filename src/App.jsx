@@ -1031,16 +1031,19 @@ export default function App() {
   const markPaid = async (id, formaPago) => {
     const { data: userData } = await supabase.auth.getUser();
     const base = { estado: "pagada", forma_pago: formaPago, cobrado_por: userData?.user?.id || null };
+    const fechaPago = new Date().toISOString();
     let { error } = await supabase
       .from("facturas")
-      .update({ ...base, fecha_pago: new Date().toISOString() })
+      .update({ ...base, fecha_pago: fechaPago })
       .eq("id", id);
     if (error && /fecha_pago/i.test(error.message || "")) {
       ({ error } = await supabase.from("facturas").update(base).eq("id", id));
     }
     if (error) setErrorMsg(error.message);
     else {
+      const pagada = facturas.find((f) => f.id === id);
       setPagoModal(null);
+      if (pagada) setReciboModal({ ...pagada, ...base, fecha_pago: fechaPago, recienPagada: true });
       loadAll();
     }
   };
@@ -2310,7 +2313,9 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
       // Las pendientes traen como "Fecha Pago" el día del export: se ignora.
       const pago = pagada ? fechaWH(r["fecha pago"]) : null;
       const cobrado = r["total cobrado"];
-      const [vy, vm] = venc ? venc.fecha.split("-").map(Number) : [0, 0];
+      // El periodo es el mes en que se emitió la factura (igual que en WispHub).
+      const base = emis || venc;
+      const [vy, vm] = base ? base.fecha.split("-").map(Number) : [0, 0];
       const f = {
         numero_wisphub: numero,
         usuario,
@@ -2322,7 +2327,7 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
         fecha_pago: pago ? `${pago.fecha}T${pago.hora || "12:00"}:00-04:00` : null,
         forma_pago: pagada ? formaPagoWH(r["forma de pago"]) : null,
         cajero: txtWH(r["cajero"]) || null,
-        periodo: venc ? `${MESES[vm - 1]} ${vy}` : "",
+        periodo: base ? `${MESES[vm - 1]} ${vy}` : "",
       };
       const prev = facMap.get(numero);
       if (prev) {
@@ -3016,6 +3021,29 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   const empresaMostrar = empresa || EMPRESA_DEFAULT;
   const escala = tamano === "chico" ? 0.8 : tamano === "grande" ? 1.25 : 1;
   const sz = (n) => Math.round(n * escala);
+  const formaPagoTexto = FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—";
+
+  // Mismo recibo, en texto, para mandarlo por WhatsApp (los * ponen negrita en WhatsApp).
+  const mensajeWhatsApp = [
+    `*${empresaMostrar.nombre}*`,
+    pagada ? `Recibo de pago N° ${numeroRecibo}` : `Factura N° ${numeroRecibo}`,
+    `Fecha: ${fecha.toLocaleDateString("es-DO")} ${fecha.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}`,
+    "",
+    `Cliente: ${cliente?.nombre || "—"}`,
+    `Servicio: Internet${plan ? ` - Plan ${plan.nombre}` : ""}`,
+    `Periodo: ${factura.periodo || "—"}`,
+    "",
+    pagada ? `*Monto pagado: ${money(factura.monto)}*` : `*Monto a pagar: ${money(factura.monto)}*`,
+    pagada ? `Forma de pago: ${formaPagoTexto}` : `Vence: ${factura.fecha_vencimiento || "—"}`,
+    `Saldo pendiente: ${pagada ? money(0) : money(factura.monto)}`,
+    "",
+    pagada ? "¡Gracias por su pago!" : "Gracias por su preferencia.",
+    empresaMostrar.telefono ? `Tel: ${empresaMostrar.telefono}` : "",
+  ]
+    .filter((linea, i, arr) => !(linea === "" && arr[i - 1] === ""))
+    .join("\n")
+    .trim();
+  const linkWhatsApp = whatsappLink(cliente?.telefono, mensajeWhatsApp);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4 recibo-overlay" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
@@ -3028,6 +3056,15 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           <h3 className="text-base font-semibold" style={{ color: COLORS.text }}>Recibo de pago</h3>
           <button onClick={onClose} style={{ color: COLORS.dim }}><X size={18} /></button>
         </div>
+
+        {factura.recienPagada && (
+          <div
+            className="flex items-center gap-2 rounded-lg px-3 py-2 mb-4 text-sm no-print"
+            style={{ backgroundColor: COLORS.active + "1A", color: COLORS.active, border: `1px solid ${COLORS.active}40` }}
+          >
+            <CheckCircle2 size={16} /> Pago registrado. ¿Lo imprimes o se lo mandas al cliente?
+          </div>
+        )}
 
         <div className="flex gap-2 mb-4 no-print">
           <button
@@ -3103,8 +3140,27 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 mt-4 no-print">
+        <div className="flex flex-wrap justify-end gap-2 mt-4 no-print">
           <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+          {linkWhatsApp ? (
+            <a
+              href={linkWhatsApp}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium"
+              style={{ backgroundColor: "#25D366", color: "#fff" }}
+            >
+              <MessageCircle size={16} /> Enviar por WhatsApp
+            </a>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm"
+              style={{ color: COLORS.dim, border: `1px dashed ${COLORS.border}` }}
+              title="Agrega el teléfono en la ficha del cliente para poder enviarlo"
+            >
+              <MessageCircle size={16} /> Sin teléfono
+            </span>
+          )}
           <Button onClick={() => window.print()}><Printer size={16} /> Imprimir / Guardar PDF</Button>
         </div>
       </div>
