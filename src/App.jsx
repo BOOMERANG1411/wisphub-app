@@ -3023,6 +3023,140 @@ const FORMAS_PAGO = [
   { value: "saldo_favor", label: "Saldo a Favor" },
 ];
 
+function cargarImagen(src) {
+  return new Promise((resolve) => {
+    if (!src) return resolve(null);
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+// Dibuja el recibo en un lienzo (canvas) y lo devuelve listo para convertir en PNG.
+function dibujarReciboImagen(d, logo) {
+  const S = 2; // doble resolución para que se vea nítido en el celular
+  const W = 400;
+  const P = 24;
+  const base = document.createElement("canvas");
+  base.width = W * S;
+  base.height = 1600 * S;
+  const x = base.getContext("2d");
+  x.scale(S, S);
+  x.fillStyle = "#ffffff";
+  x.fillRect(0, 0, W, 1600);
+  let y = P;
+
+  const texto = (t, font, color, align, px) => {
+    x.font = font;
+    x.fillStyle = color || "#111111";
+    x.textAlign = align || "left";
+    x.fillText(String(t ?? ""), px ?? (align === "center" ? W / 2 : align === "right" ? W - P : P), y);
+  };
+  const partir = (t, font, maxW) => {
+    x.font = font;
+    const palabras = String(t ?? "").split(" ");
+    const lineas = [];
+    let l = "";
+    palabras.forEach((p) => {
+      const prueba = l ? `${l} ${p}` : p;
+      if (x.measureText(prueba).width > maxW && l) {
+        lineas.push(l);
+        l = p;
+      } else l = prueba;
+    });
+    if (l) lineas.push(l);
+    return lineas;
+  };
+  const raya = () => {
+    y += 2;
+    x.strokeStyle = "#9a9a9a";
+    x.setLineDash([4, 3]);
+    x.beginPath();
+    x.moveTo(P, y);
+    x.lineTo(W - P, y);
+    x.stroke();
+    x.setLineDash([]);
+    y += 22;
+  };
+  const fila = (izq, der, fuerte) => {
+    const font = fuerte ? "bold 16px Arial" : "14px Arial";
+    texto(izq, font, "#111", "left");
+    texto(der, font, "#111", "right");
+    y += fuerte ? 24 : 21;
+  };
+  const dato = (label, valor) => {
+    const lineas = partir(`${label} ${valor}`, "14px Arial", W - P * 2);
+    lineas.forEach((l, i) => {
+      if (i === 0) {
+        x.font = "bold 14px Arial";
+        x.fillStyle = "#111";
+        x.textAlign = "left";
+        x.fillText(label, P, y);
+        const ancho = x.measureText(label + " ").width;
+        texto(l.slice(label.length + 1), "14px Arial", "#111", "left", P + ancho);
+      } else texto(l, "14px Arial");
+      y += 20;
+    });
+  };
+
+  if (logo) {
+    const h = 60;
+    const w = Math.min((logo.width * h) / logo.height, 160);
+    x.drawImage(logo, (W - w) / 2, y, w, h);
+    y += h + 26;
+  } else y += 18;
+  partir(d.empresa.nombre, "bold 22px Arial", W - P * 2).forEach((l) => { texto(l, "bold 22px Arial", "#111", "center"); y += 26; });
+  if (d.empresa.direccion) { texto(d.empresa.direccion, "13px Arial", "#555", "center"); y += 18; }
+  const contacto = [d.empresa.telefono, d.empresa.email].filter(Boolean).join(" · ");
+  if (contacto) { texto(contacto, "13px Arial", "#555", "center"); y += 18; }
+
+  // Sello de estado
+  y += 8;
+  const sello = d.pagada ? "PAGADO" : "PENDIENTE";
+  const colorSello = d.pagada ? "#1f9d55" : "#d97706";
+  x.font = "bold 14px Arial";
+  const anchoSello = x.measureText(sello).width + 28;
+  x.strokeStyle = colorSello;
+  x.lineWidth = 2;
+  x.strokeRect((W - anchoSello) / 2, y - 4, anchoSello, 26);
+  x.lineWidth = 1;
+  y += 14;
+  texto(sello, "bold 14px Arial", colorSello, "center");
+  y += 26;
+
+  raya();
+  texto(`Fecha: ${d.fecha}`, "12px Arial", "#555", "left");
+  texto(`${d.pagada ? "Recibo" : "Factura"} N° ${d.numero}`, "12px Arial", "#555", "right");
+  y += 12;
+  raya();
+  dato("Cliente:", d.cliente);
+  if (d.telefono) dato("Teléfono:", d.telefono);
+  dato("Forma de pago:", d.formaPago);
+  raya();
+  texto("Descripción", "bold 14px Arial");
+  y += 20;
+  partir(d.servicio, "14px Arial", W - P * 2).forEach((l) => { texto(l, "14px Arial"); y += 20; });
+  partir(d.periodo, "13px Arial", W - P * 2).forEach((l) => { texto(l, "13px Arial", "#555"); y += 19; });
+  raya();
+  fila("Subtotal:", d.subtotal);
+  fila("Descuento:", d.descuento);
+  fila("Su pago:", d.suPago);
+  raya();
+  fila("Nuevo saldo pendiente:", d.saldo, true);
+  y += 8;
+  texto(`Facturado por: ${d.cajero}`, "12px Arial", "#555");
+  y += 28;
+  texto(d.pagada ? "¡Gracias por su pago!" : "¡Gracias por su preferencia!", "13px Arial", "#555", "center");
+  y += P;
+
+  const final = document.createElement("canvas");
+  final.width = W * S;
+  final.height = Math.ceil(y * S);
+  final.getContext("2d").drawImage(base, 0, 0);
+  return final;
+}
+
 function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, formatoDefault, onClose }) {
   const [formato, setFormato] = useState(formatoDefault || "termica"); // "termica" o "carta"
   const fecha = factura.fecha_pago ? new Date(factura.fecha_pago) : new Date();
@@ -3054,6 +3188,68 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
     .join("\n")
     .trim();
   const linkWhatsApp = whatsappLink(cliente?.telefono, mensajeWhatsApp);
+  const linkChat = whatsappLink(cliente?.telefono, "");
+
+  // El logo se carga al abrir el recibo, para que al tocar "Enviar" la imagen salga al instante.
+  const [logoImg, setLogoImg] = useState(null);
+  const [avisoEnvio, setAvisoEnvio] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  useEffect(() => {
+    cargarImagen(empresaMostrar.logoUrl).then(setLogoImg);
+  }, [empresaMostrar.logoUrl]);
+
+  const enviarImagen = async () => {
+    setAvisoEnvio("");
+    setEnviando(true);
+    try {
+      const canvas = dibujarReciboImagen(
+        {
+          empresa: empresaMostrar,
+          pagada,
+          numero: numeroRecibo,
+          fecha: `${fecha.toLocaleDateString("es-DO")} ${fecha.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}`,
+          cliente: cliente?.nombre || "—",
+          telefono: cliente?.telefono || "",
+          formaPago: pagada ? formaPagoTexto : "—",
+          servicio: `Servicio de Internet${plan ? ` — Plan ${plan.nombre}` : ""}`,
+          periodo: `Periodo: ${factura.periodo || "—"}${factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}`,
+          subtotal: money(factura.monto),
+          descuento: money(0),
+          suPago: pagada ? money(factura.monto) : money(0),
+          saldo: pagada ? money(0) : money(factura.monto),
+          cajero: cajeroNombre || "Administrador",
+        },
+        logoImg
+      );
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+      const archivo = new File([blob], `recibo-${numeroRecibo}.png`, { type: "image/png" });
+
+      // Celular: abre el menú de compartir del teléfono (eliges WhatsApp y el chat del cliente).
+      if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+        try {
+          await navigator.share({ files: [archivo], title: `Recibo ${numeroRecibo}` });
+        } catch (err) {
+          // Si cancelas el menú de compartir no pasa nada.
+        }
+        return;
+      }
+
+      // Computadora: copiamos la imagen y abrimos el chat del cliente para pegarla.
+      try {
+        await navigator.clipboard.write([new window.ClipboardItem({ "image/png": blob })]);
+        if (linkChat) window.open(linkChat, "_blank");
+        setAvisoEnvio("Imagen copiada. En el chat de WhatsApp presiona Ctrl + V para pegarla y envíala.");
+      } catch (err) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = archivo.name;
+        a.click();
+        setAvisoEnvio("Se descargó la imagen del recibo. Adjúntala en el chat de WhatsApp del cliente.");
+      }
+    } finally {
+      setEnviando(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4 recibo-overlay" style={{ backgroundColor: "#00000099", zIndex: 9999 }} onClick={onClose}>
@@ -3150,28 +3346,38 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           </div>
         </div>
 
+        {avisoEnvio && (
+          <div
+            className="rounded-lg px-3 py-2 mt-4 text-xs no-print"
+            style={{ backgroundColor: COLORS.active + "1A", color: COLORS.active, border: `1px solid ${COLORS.active}40` }}
+          >
+            {avisoEnvio}
+          </div>
+        )}
+
         <div className="flex flex-wrap justify-end gap-2 mt-4 no-print">
           <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+          <button
+            type="button"
+            onClick={enviarImagen}
+            disabled={enviando}
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium"
+            style={{ backgroundColor: "#25D366", color: "#fff", opacity: enviando ? 0.6 : 1 }}
+          >
+            <MessageCircle size={16} /> {enviando ? "Preparando…" : "Enviar imagen por WhatsApp"}
+          </button>
+          <Button onClick={() => window.print()}><Printer size={16} /> Imprimir / Guardar PDF</Button>
+        </div>
+        <div className="text-right mt-2 no-print">
           {linkWhatsApp ? (
-            <a
-              href={linkWhatsApp}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium"
-              style={{ backgroundColor: "#25D366", color: "#fff" }}
-            >
-              <MessageCircle size={16} /> Enviar por WhatsApp
+            <a href={linkWhatsApp} target="_blank" rel="noreferrer" className="text-xs underline" style={{ color: COLORS.dim }}>
+              o enviarlo como texto directo al chat del cliente
             </a>
           ) : (
-            <span
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm"
-              style={{ color: COLORS.dim, border: `1px dashed ${COLORS.border}` }}
-              title="Agrega el teléfono en la ficha del cliente para poder enviarlo"
-            >
-              <MessageCircle size={16} /> Sin teléfono
+            <span className="text-xs" style={{ color: COLORS.dim }}>
+              Este cliente no tiene teléfono: la imagen la puedes enviar eligiendo el chat a mano.
             </span>
           )}
-          <Button onClick={() => window.print()}><Printer size={16} /> Imprimir / Guardar PDF</Button>
         </div>
       </div>
     </div>
