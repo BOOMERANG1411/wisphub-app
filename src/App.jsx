@@ -1040,6 +1040,35 @@ export default function App() {
     if (f.cajero) return `${f.cajero} (WispHub)`;
     return "Sin registrar";
   };
+  // Código del cliente: el número al inicio del nombre o del usuario (ej. "1039 DOMINGO…" → 1039).
+  const codigoCliente = (c) => {
+    const m = String(c?.nombre || "").match(/^\s*(\d+)/) || String(c?.pppoe_usuario || "").match(/^\s*(\d+)/);
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const nombreDe = (id) => clientes.find((c) => c.id === id)?.nombre || "";
+  const fechaDe = (f) => f.fecha_emision || f.fecha_vencimiento || "";
+  const ordenarFacturas = (a, b, orden) => {
+    const texto = (x, y) => (x || "").localeCompare(y || "", "es", { numeric: true });
+    switch (orden) {
+      case "antigua": return texto(fechaDe(a), fechaDe(b)) || Number(a.numero_wisphub || 0) - Number(b.numero_wisphub || 0);
+      case "vence_proximo": return texto(a.fecha_vencimiento, b.fecha_vencimiento);
+      case "vence_lejano": return texto(b.fecha_vencimiento, a.fecha_vencimiento);
+      case "pago_reciente": return texto(b.fecha_pago || "", a.fecha_pago || "");
+      case "nombre_asc": return texto(nombreDe(a.cliente_id), nombreDe(b.cliente_id));
+      case "nombre_desc": return texto(nombreDe(b.cliente_id), nombreDe(a.cliente_id));
+      case "numero_desc": return Number(b.numero_wisphub || 0) - Number(a.numero_wisphub || 0);
+      case "numero_asc": return Number(a.numero_wisphub || Infinity) - Number(b.numero_wisphub || Infinity);
+      case "codigo_asc": {
+        const ca = codigoCliente(clientes.find((c) => c.id === a.cliente_id));
+        const cb = codigoCliente(clientes.find((c) => c.id === b.cliente_id));
+        return ca - cb || texto(fechaDe(b), fechaDe(a));
+      }
+      case "monto_desc": return Number(b.monto || 0) - Number(a.monto || 0);
+      case "monto_asc": return Number(a.monto || 0) - Number(b.monto || 0);
+      default: return texto(fechaDe(b), fechaDe(a)) || Number(b.numero_wisphub || 0) - Number(a.numero_wisphub || 0);
+    }
+  };
+
   const quienCreo = (f) => {
     if (f.creado_por) return nombreCajero(f.creado_por) || "Usuario eliminado";
     if (f.numero_wisphub) return "WispHub";
@@ -1286,8 +1315,17 @@ export default function App() {
     .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro)
     .slice()
     .sort((a, b) => {
-      if (ordenCliente === "nombre_asc") return (a.nombre || "").localeCompare(b.nombre || "");
-      if (ordenCliente === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
+      const texto = (x, y) => (x || "").localeCompare(y || "", "es", { numeric: true });
+      const codigo = (c) => {
+        const m = String(c.nombre || "").match(/^\s*(\d+)/) || String(c.pppoe_usuario || "").match(/^\s*(\d+)/);
+        return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+      };
+      if (ordenCliente === "nombre_asc") return texto(a.nombre, b.nombre);
+      if (ordenCliente === "nombre_desc") return texto(b.nombre, a.nombre);
+      if (ordenCliente === "codigo_asc") return codigo(a) - codigo(b);
+      if (ordenCliente === "codigo_desc") return codigo(b) - codigo(a);
+      if (ordenCliente === "instalacion_desc") return texto(b.fecha_instalacion, a.fecha_instalacion);
+      if (ordenCliente === "instalacion_asc") return texto(a.fecha_instalacion || "9999", b.fecha_instalacion || "9999");
       if (ordenCliente === "deuda_asc") return (deudaPorCliente[a.id]?.monto || 0) - (deudaPorCliente[b.id]?.monto || 0);
       if (ordenCliente === "deuda_desc") return (deudaPorCliente[b.id]?.monto || 0) - (deudaPorCliente[a.id]?.monto || 0);
       return 0;
@@ -1754,11 +1792,21 @@ export default function App() {
                   <option value={100}>Mostrar 100</option>
                   <option value="todos">Mostrar todos</option>
                 </select>
-                <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
-                <OrdenFlecha label="Nombre" campo="nombre" valor={ordenCliente} onChange={setOrdenCliente} />
-                {clientesVista === "atraso" && (
-                  <OrdenFlecha label="Deuda" campo="deuda" valor={ordenCliente} onChange={setOrdenCliente} />
-                )}
+                <select
+                  style={{ ...inputStyle, width: "auto" }}
+                  value={ordenCliente}
+                  onChange={(e) => setOrdenCliente(e.target.value)}
+                  title="Ordenar clientes"
+                >
+                  <option value="nombre_asc">Nombre A → Z</option>
+                  <option value="nombre_desc">Nombre Z → A</option>
+                  <option value="codigo_asc">Código menor a mayor (1001, 1002…)</option>
+                  <option value="codigo_desc">Código mayor a menor</option>
+                  <option value="instalacion_desc">Instalados más recientemente</option>
+                  <option value="instalacion_asc">Instalados hace más tiempo</option>
+                  <option value="deuda_desc">Deben más primero</option>
+                  <option value="deuda_asc">Deben menos primero</option>
+                </select>
                 {search && (
                   <button onClick={() => setSearch("")} className="text-xs underline" style={{ color: COLORS.accent }}>
                     Quitar búsqueda "{search}"
@@ -2055,10 +2103,31 @@ export default function App() {
                     <option value="wisphub">Cobradas en WispHub</option>
                   </select>
                 )}
-                <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
-                <OrdenFlecha label="Cliente" campo="cliente" valor={ordenFactura} onChange={setOrdenFactura} />
-                <OrdenFlecha label="Monto" campo="monto" valor={ordenFactura} onChange={setOrdenFactura} />
-                <OrdenFlecha label="Vencimiento" campo="vencimiento" valor={ordenFactura} onChange={setOrdenFactura} />
+                <select
+                  style={{ ...inputStyle, width: "auto" }}
+                  value={ordenFactura || "reciente"}
+                  onChange={(e) => setOrdenFactura(e.target.value)}
+                  title="Ordenar facturas"
+                >
+                  <optgroup label="Por fecha">
+                    <option value="reciente">Más recientes primero</option>
+                    <option value="antigua">Más antiguas primero</option>
+                    <option value="vence_proximo">Vencimiento más próximo</option>
+                    <option value="vence_lejano">Vencimiento más lejano</option>
+                    <option value="pago_reciente">Pagadas más recientemente</option>
+                  </optgroup>
+                  <optgroup label="Por nombre">
+                    <option value="nombre_asc">Cliente A → Z</option>
+                    <option value="nombre_desc">Cliente Z → A</option>
+                  </optgroup>
+                  <optgroup label="Por número">
+                    <option value="numero_desc"># Factura mayor a menor</option>
+                    <option value="numero_asc"># Factura menor a mayor</option>
+                    <option value="codigo_asc">Código de cliente (1001, 1002…)</option>
+                    <option value="monto_desc">Monto mayor a menor</option>
+                    <option value="monto_asc">Monto menor a mayor</option>
+                  </optgroup>
+                </select>
               </div>
               <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
                 {(() => {
@@ -2087,19 +2156,7 @@ export default function App() {
                       if (facturaFiltro === "por_cobrar") return visual !== "pagada";
                       return visual === facturaFiltro;
                     })
-                    .sort((a, b) => {
-                      if (!ordenFactura) return 0;
-                      if (ordenFactura === "cliente_asc" || ordenFactura === "cliente_desc") {
-                        const na = clientes.find((c) => c.id === a.cliente_id)?.nombre || "";
-                        const nb = clientes.find((c) => c.id === b.cliente_id)?.nombre || "";
-                        return ordenFactura === "cliente_asc" ? na.localeCompare(nb) : nb.localeCompare(na);
-                      }
-                      if (ordenFactura === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
-                      if (ordenFactura === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
-                      if (ordenFactura === "vencimiento_asc") return (a.fecha_vencimiento || "").localeCompare(b.fecha_vencimiento || "");
-                      if (ordenFactura === "vencimiento_desc") return (b.fecha_vencimiento || "").localeCompare(a.fecha_vencimiento || "");
-                      return 0;
-                    });
+                    .sort((a, b) => ordenarFacturas(a, b, ordenFactura || "reciente"));
                   if (facturasFiltradas.length === 0) {
                     return (
                       <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
