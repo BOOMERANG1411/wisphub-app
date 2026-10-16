@@ -5961,36 +5961,128 @@ function PlanForm({ initial, onCancel, onSave }) {
   );
 }
 
+// Buscador de clientes: escribe nombre, número, usuario PPPoE, IP o teléfono.
+function BuscadorCliente({ clientes, planById, valor, onElegir }) {
+  const [texto, setTexto] = useState("");
+  const [abierto, setAbierto] = useState(!valor);
+  const elegido = clientes.find((c) => c.id === valor);
+  const q = normKey(texto);
+  const resultados = clientes
+    .filter((c) => !q || [c.nombre, c.pppoe_usuario, c.ip_asignada, c.telefono].some((v) => normKey(v).includes(q)))
+    .sort(
+      (a, b) =>
+        (a.estado === "cancelado") - (b.estado === "cancelado") || (a.nombre || "").localeCompare(b.nombre || "")
+    );
+  const visibles = resultados.slice(0, 50);
+
+  if (elegido && !abierto) {
+    const plan = planById(elegido.plan_id);
+    return (
+      <div
+        className="flex items-center justify-between gap-3 rounded-lg px-3 py-2"
+        style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.accent}60` }}
+      >
+        <div className="min-w-0">
+          <div className="text-sm font-medium truncate">{elegido.nombre}</div>
+          <div className="text-xs" style={{ color: COLORS.dim }}>
+            {plan ? `${plan.nombre} · ${money(plan.precio)}` : "Sin plan"} · Corte {Number(elegido.ciclo) === 30 ? "30" : "15"}
+          </div>
+        </div>
+        <button type="button" className="text-xs underline shrink-0" style={{ color: COLORS.accent }} onClick={() => { setTexto(""); setAbierto(true); }}>
+          Cambiar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="relative">
+        <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
+        <input
+          autoFocus
+          style={{ ...inputStyle, paddingLeft: 32 }}
+          placeholder="Escribe nombre, número, usuario PPPoE, IP o teléfono"
+          value={texto}
+          onChange={(e) => setTexto(e.target.value)}
+        />
+      </div>
+      <div
+        className="mt-1 rounded-lg overflow-y-auto"
+        style={{ border: `1px solid ${COLORS.border}`, backgroundColor: COLORS.panel2, maxHeight: 240 }}
+      >
+        {visibles.length === 0 ? (
+          <div className="p-3 text-xs text-center" style={{ color: COLORS.dim }}>Ningún cliente coincide con "{texto}".</div>
+        ) : (
+          visibles.map((c, i) => {
+            const plan = planById(c.plan_id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => { onElegir(c); setAbierto(false); }}
+                className="w-full text-left px-3 py-2"
+                style={{ borderTop: i ? `1px solid ${COLORS.border}` : "none", opacity: c.estado === "cancelado" ? 0.55 : 1 }}
+              >
+                <div className="text-sm truncate">{c.nombre}</div>
+                <div className="text-xs" style={{ color: COLORS.dim }}>
+                  {plan ? plan.nombre : "Sin plan"}
+                  {c.ip_asignada ? ` · ${c.ip_asignada}` : ""}
+                  {c.estado !== "activo" ? ` · ${c.estado}` : ""}
+                </div>
+              </button>
+            );
+          })
+        )}
+        {resultados.length > visibles.length && (
+          <div className="p-2 text-xs text-center" style={{ color: COLORS.dim, borderTop: `1px solid ${COLORS.border}` }}>
+            {resultados.length - visibles.length} más… sigue escribiendo para encontrarlo.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
-  const firstClient = clientes[0];
+  const hoy = new Date();
   const [form, setForm] = useState({
     id: initial.id,
-    clienteId: initial.clienteId || (firstClient && firstClient.id) || "",
-    periodo: initial.periodo || "",
-    monto: initial.monto || (firstClient ? (planById(firstClient.plan_id)?.precio ?? "") : ""),
+    clienteId: initial.clienteId || "",
+    periodo: initial.periodo || `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`,
+    monto: initial.monto || "",
     fechaVencimiento: initial.fechaVencimiento || "",
     estado: initial.estado || "pendiente",
   });
+  const [error, setError] = useState("");
+
+  // Al elegir el cliente se llenan solos el monto de su plan y el vencimiento de su corte.
+  const elegirCliente = (c) => {
+    const plan = planById(c.plan_id);
+    const { vencimiento } = cicloInfo(c.ciclo || 15, new Date());
+    setForm((f) => ({
+      ...f,
+      clienteId: c.id,
+      monto: plan ? plan.precio : f.monto,
+      fechaVencimiento: f.fechaVencimiento || fmtISO(vencimiento),
+    }));
+    setError("");
+  };
+
+  const guardar = () => {
+    if (!form.clienteId) return setError("Elige el cliente.");
+    if (!Number(form.monto)) return setError("Escribe el monto.");
+    onSave(form);
+  };
+
   return (
     <Modal title={initial.id ? "Editar factura" : "Nueva factura"} onClose={onCancel}>
-      <Field label="Cliente">
-        <select
-          style={inputStyle}
-          value={form.clienteId}
-          onChange={(e) => {
-            const cliente = clientes.find((c) => c.id === e.target.value);
-            const plan = cliente ? planById(cliente.plan_id) : null;
-            setForm({ ...form, clienteId: e.target.value, monto: plan ? plan.precio : form.monto });
-          }}
-        >
-          {clientes.length === 0 && <option value="">Sin clientes registrados</option>}
-          {clientes.map((c) => (
-            <option key={c.id} value={c.id}>{c.nombre}</option>
-          ))}
-        </select>
-      </Field>
+      <div className="mb-3">
+        <span className="block text-xs mb-1" style={{ color: COLORS.dim }}>Cliente</span>
+        <BuscadorCliente clientes={clientes} planById={planById} valor={form.clienteId} onElegir={elegirCliente} />
+      </div>
       <Field label="Periodo">
-        <input style={inputStyle} placeholder="Ej. Julio 2026" value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
+        <input style={inputStyle} placeholder="Ej. octubre 2026" value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
       </Field>
       <Field label="Monto (RD$)">
         <input type="number" style={inputStyle} value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} />
@@ -5998,9 +6090,10 @@ function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
       <Field label="Fecha de vencimiento">
         <input type="date" style={inputStyle} value={form.fechaVencimiento} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} />
       </Field>
+      {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
       <div className="flex justify-end gap-2 mt-4">
         <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
-        <Button onClick={() => form.clienteId && onSave(form)}>Guardar</Button>
+        <Button onClick={guardar}>Guardar</Button>
       </div>
     </Modal>
   );
