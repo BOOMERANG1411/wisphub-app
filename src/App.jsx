@@ -1105,6 +1105,30 @@ export default function App() {
       loadAll();
     }
   };
+  // Anular un pago hecho por error: la factura vuelve a quedar pendiente.
+  // El administrador puede anular cualquiera; un cajero solo los suyos del mismo día.
+  // Si el pago ya se liquidó al punto de pago, no se puede (descuadraría su comisión).
+  const puedeAnular = (f) =>
+    f.estado === "pagada" &&
+    !f.liquidado &&
+    (esAdmin ||
+      (f.cobrado_por === miUserId && f.fecha_pago && fmtISO(new Date(f.fecha_pago)) === fmtISO(new Date())));
+  const anularPago = async (f) => {
+    if (f.liquidado) {
+      setErrorMsg("Este pago ya se liquidó al punto de pago, por eso no se puede anular.");
+      return;
+    }
+    const c = clientes.find((x) => x.id === f.cliente_id);
+    if (!window.confirm(`¿Anular el pago de ${money(f.monto)} de ${c ? c.nombre : "este cliente"}?\n\nLa factura vuelve a quedar pendiente y el dinero sale de la caja.`)) return;
+    const base = { estado: "pendiente", forma_pago: null, cobrado_por: null };
+    let { error } = await supabase.from("facturas").update({ ...base, fecha_pago: null }).eq("id", f.id);
+    if (error && /fecha_pago/i.test(error.message || "")) {
+      ({ error } = await supabase.from("facturas").update(base).eq("id", f.id));
+    }
+    if (error) setErrorMsg(error.message);
+    else loadAll();
+  };
+
   const saveMovimiento = async (mov) => {
     const payload = { fecha: mov.fecha, tipo: mov.tipo, descripcion: mov.descripcion, monto: mov.monto, forma_pago: mov.forma_pago };
     const q = mov.id
@@ -2016,6 +2040,16 @@ export default function App() {
                           >
                             <Receipt size={13} /> Recibo
                           </button>
+                          {puedeAnular(f) && (
+                            <button
+                              onClick={() => anularPago(f)}
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                              style={{ color: COLORS.danger, border: `1px solid ${COLORS.danger}40`, backgroundColor: COLORS.danger + "1A" }}
+                              title="Deshacer este pago; la factura vuelve a quedar pendiente"
+                            >
+                              <X size={13} /> Anular pago
+                            </button>
+                          )}
                           {!esCajero && (
                             <button
                               onClick={() => window.confirm("¿Eliminar esta factura?") && deleteInvoice(f.id)}
@@ -2055,6 +2089,8 @@ export default function App() {
               clientes={clientes}
               nombreCajero={nombreCajero}
               soloUsuario={esCajero ? miUserId : null}
+              puedeAnular={puedeAnular}
+              onAnular={anularPago}
               onNuevo={() => setMovimientoModal({})}
               onEditar={(m) => setMovimientoModal(m)}
               onEliminar={deleteMovimiento}
@@ -3948,7 +3984,7 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
   );
 }
 
-function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, onNuevo, onEditar, onEliminar, orden, onOrden }) {
+function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, puedeAnular, onAnular, onNuevo, onEditar, onEliminar, orden, onOrden }) {
   // Día que se está mirando (por defecto hoy). Vacío = todos los días.
   const [dia, setDia] = useState(fmtISO(new Date()));
   const delDia = (fechaISO) => !dia || (fechaISO || "").slice(0, 10) === dia;
@@ -4070,7 +4106,14 @@ function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, o
                   {!soloUsuario && ` · ${nombreCajero(f.cobrado_por) || f.cajero || "Administrador"}`}
                 </div>
               </div>
-              <span className="font-mono text-sm shrink-0" style={{ color: COLORS.accent }}>{money(f.monto)}</span>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="font-mono text-sm" style={{ color: COLORS.accent }}>{money(f.monto)}</span>
+                {puedeAnular(f) && (
+                  <button onClick={() => onAnular(f)} className="text-xs underline" style={{ color: COLORS.danger }} title="Deshacer este pago">
+                    Anular
+                  </button>
+                )}
+              </div>
             </div>
           ))
         )}
