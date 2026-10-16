@@ -406,10 +406,27 @@ function LoginScreen({ onLogin }) {
     e.preventDefault();
     setBusy(true);
     setError("");
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    let data, error;
+    try {
+      ({ data, error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password }));
+    } catch (err) {
+      error = err;
+    }
     setBusy(false);
-    if (error) setError("Correo o contraseña incorrectos.");
-    else onLogin(data.session);
+    if (!error) {
+      onLogin(data.session);
+      return;
+    }
+    // Mostrar la causa real, no siempre "contraseña incorrecta".
+    const msg = `${error.message || ""} ${error.status || ""}`.toLowerCase();
+    if (msg.includes("invalid login credentials")) setError("Correo o contraseña incorrectos.");
+    else if (msg.includes("not confirmed")) setError("Este correo todavía no está confirmado en Supabase.");
+    else if (msg.includes("banned")) setError("Este usuario está bloqueado.");
+    else if (msg.includes("rate") || msg.includes("429") || msg.includes("too many"))
+      setError("Demasiados intentos seguidos. Espera unos minutos y vuelve a probar.");
+    else if (msg.includes("fetch") || msg.includes("network") || msg.includes("failed"))
+      setError("No hay conexión con la base de datos. Revisa tu internet o la configuración de Supabase en Vercel.");
+    else setError(`No se pudo entrar: ${error.message || "error desconocido"}`);
   };
 
   return (
@@ -2034,6 +2051,10 @@ export default function App() {
           {tab === "caja" && (
             <CajaTab
               movimientos={movimientos}
+              facturas={facturas}
+              clientes={clientes}
+              nombreCajero={nombreCajero}
+              soloUsuario={esCajero ? miUserId : null}
               onNuevo={() => setMovimientoModal({})}
               onEditar={(m) => setMovimientoModal(m)}
               onEliminar={deleteMovimiento}
@@ -3927,13 +3948,33 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
   );
 }
 
-function CajaTab({ movimientos, onNuevo, onEditar, onEliminar, orden, onOrden }) {
-  const gastos = movimientos.filter((m) => m.tipo === "gasto");
-  const ingresos = movimientos.filter((m) => m.tipo === "otro_ingreso");
-  const totalGastos = gastos.reduce((s, m) => s + Number(m.monto || 0), 0);
-  const totalIngresos = ingresos.reduce((s, m) => s + Number(m.monto || 0), 0);
+function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, onNuevo, onEditar, onEliminar, orden, onOrden }) {
+  // Día que se está mirando (por defecto hoy). Vacío = todos los días.
+  const [dia, setDia] = useState(fmtISO(new Date()));
+  const delDia = (fechaISO) => !dia || (fechaISO || "").slice(0, 10) === dia;
+  const sumar = (lista) => lista.reduce((s, x) => s + Number(x.monto || 0), 0);
 
-  const movimientosOrdenados = movimientos.slice().sort((a, b) => {
+  // Cobros de facturas: lo que entró por pagos de clientes (si es cajero, solo los suyos).
+  const cobros = facturas
+    .filter((f) => f.estado === "pagada" && f.fecha_pago)
+    .filter((f) => !soloUsuario || f.cobrado_por === soloUsuario)
+    .filter((f) => !dia || fmtISO(new Date(f.fecha_pago)) === dia)
+    .sort((a, b) => (b.fecha_pago || "").localeCompare(a.fecha_pago || ""));
+  const movsDia = movimientos.filter((m) => delDia(m.fecha));
+  const gastos = movsDia.filter((m) => m.tipo === "gasto");
+  const ingresos = movsDia.filter((m) => m.tipo === "otro_ingreso");
+  const totalCobros = sumar(cobros);
+  const totalGastos = sumar(gastos);
+  const totalIngresos = sumar(ingresos);
+
+  const cuadre = FORMAS_PAGO.map((fp) => {
+    const c = sumar(cobros.filter((f) => f.forma_pago === fp.value));
+    const i = sumar(ingresos.filter((m) => m.forma_pago === fp.value));
+    const g = sumar(gastos.filter((m) => m.forma_pago === fp.value));
+    return { ...fp, cobros: c, ingresos: i, gastos: g, total: c + i - g };
+  });
+
+  const movimientosOrdenados = movsDia.slice().sort((a, b) => {
     if (!orden) return 0;
     if (orden === "fecha_asc") return (a.fecha || "").localeCompare(b.fecha || "");
     if (orden === "fecha_desc") return (b.fecha || "").localeCompare(a.fecha || "");
@@ -3942,37 +3983,116 @@ function CajaTab({ movimientos, onNuevo, onEditar, onEliminar, orden, onOrden })
     return 0;
   });
 
+  const clienteDe = (id) => clientes.find((c) => c.id === id)?.nombre || "Cliente eliminado";
+  const hora = (iso) => {
+    const d = new Date(iso);
+    return dia
+      ? d.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleString("es-DO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+  const tarjeta = (label, valor, color, Icon, sub) => (
+    <div className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center gap-2 text-xs mb-2" style={{ color: COLORS.dim }}><Icon size={14} /> {label}</div>
+      <div className="font-mono text-lg" style={{ color }}>{money(valor)}</div>
+      {sub && <div className="text-xs mt-1" style={{ color: COLORS.dim }}>{sub}</div>}
+    </div>
+  );
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
         <div>
           <h1 className="font-display text-xl md:text-2xl font-semibold">Caja</h1>
-          <p className="text-sm" style={{ color: COLORS.dim }}>Gastos y otros ingresos, fuera de la facturación de clientes.</p>
+          <p className="text-sm" style={{ color: COLORS.dim }}>
+            {soloUsuario ? "Tus cobros, gastos y otros ingresos." : "Cobros de facturas, gastos y otros ingresos."}
+          </p>
         </div>
-        <Button onClick={onNuevo}><Plus size={16} /> Nuevo movimiento</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="date" style={{ ...inputStyle, width: "auto" }} value={dia} onChange={(e) => setDia(e.target.value)} />
+          {dia ? (
+            <Button variant="ghost" onClick={() => setDia("")}>Ver todos los días</Button>
+          ) : (
+            <Button variant="ghost" onClick={() => setDia(fmtISO(new Date()))}>Hoy</Button>
+          )}
+          <Button onClick={onNuevo}><Plus size={16} /> Nuevo movimiento</Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 mb-6">
-        <div className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
-          <div className="flex items-center gap-2 text-xs mb-2" style={{ color: COLORS.dim }}><TrendingUp size={14} /> Otros ingresos</div>
-          <div className="font-mono text-lg" style={{ color: COLORS.active }}>{money(totalIngresos)}</div>
-        </div>
-        <div className="rounded-xl p-4" style={{ backgroundColor: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
-          <div className="flex items-center gap-2 text-xs mb-2" style={{ color: COLORS.dim }}><TrendingDown size={14} /> Gastos</div>
-          <div className="font-mono text-lg" style={{ color: COLORS.danger }}>{money(totalGastos)}</div>
-        </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        {tarjeta("Cobros de facturas", totalCobros, COLORS.accent, Receipt, `${cobros.length} pago${cobros.length === 1 ? "" : "s"}`)}
+        {tarjeta("Otros ingresos", totalIngresos, COLORS.active, TrendingUp)}
+        {tarjeta("Gastos", totalGastos, COLORS.danger, TrendingDown)}
+        {tarjeta("Total en caja", totalCobros + totalIngresos - totalGastos, COLORS.text, Wallet, dia ? "del día" : "de todos los días")}
       </div>
 
-      <div className="flex items-center gap-4 mb-3">
-        <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
-        <OrdenFlecha label="Fecha" campo="fecha" valor={orden} onChange={onOrden} />
-        <OrdenFlecha label="Monto" campo="monto" valor={orden} onChange={onOrden} />
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>CUADRE POR FORMA DE PAGO</h2>
+      <div className="rounded-xl overflow-x-auto mb-8" style={{ border: `1px solid ${COLORS.border}` }}>
+        <table className="w-full text-sm" style={{ backgroundColor: COLORS.panel }}>
+          <thead>
+            <tr style={{ color: COLORS.dim, borderBottom: `1px solid ${COLORS.border}` }}>
+              <th className="text-left px-4 py-2 font-normal">Forma de pago</th>
+              <th className="text-right px-4 py-2 font-normal">Cobros</th>
+              <th className="text-right px-4 py-2 font-normal">Otros ingresos</th>
+              <th className="text-right px-4 py-2 font-normal">Gastos</th>
+              <th className="text-right px-4 py-2 font-normal">Total</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {cuadre.map((r) => (
+              <tr key={r.value} style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                <td className="px-4 py-2 font-sans">{r.label}</td>
+                <td className="text-right px-4 py-2">{money(r.cobros)}</td>
+                <td className="text-right px-4 py-2" style={{ color: COLORS.active }}>{money(r.ingresos)}</td>
+                <td className="text-right px-4 py-2" style={{ color: COLORS.danger }}>{money(r.gastos)}</td>
+                <td className="text-right px-4 py-2 font-semibold">{money(r.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
+      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>
+        COBROS DE FACTURAS {dia ? `DEL ${dia.split("-").reverse().join("/")}` : "(TODOS)"}
+      </h2>
+      <div className="rounded-xl overflow-hidden mb-8" style={{ border: `1px solid ${COLORS.border}` }}>
+        {cobros.length === 0 ? (
+          <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
+            No hay cobros {dia ? "este día" : "registrados"}.
+          </div>
+        ) : (
+          cobros.slice(0, 200).map((f) => (
+            <div key={f.id} className="flex items-center justify-between gap-3 px-4 py-3" style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+              <div className="min-w-0">
+                <div className="text-sm font-medium truncate">{clienteDe(f.cliente_id)}</div>
+                <div className="text-xs" style={{ color: COLORS.dim }}>
+                  {hora(f.fecha_pago)} · {FORMAS_PAGO.find((x) => x.value === f.forma_pago)?.label || "—"}
+                  {f.numero_wisphub ? ` · #${f.numero_wisphub}` : ""}
+                  {!soloUsuario && ` · ${nombreCajero(f.cobrado_por) || f.cajero || "Administrador"}`}
+                </div>
+              </div>
+              <span className="font-mono text-sm shrink-0" style={{ color: COLORS.accent }}>{money(f.monto)}</span>
+            </div>
+          ))
+        )}
+        {cobros.length > 200 && (
+          <div className="p-3 text-xs text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}>
+            Mostrando los 200 más recientes de {cobros.length}. Elige un día para ver menos.
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-display text-sm font-semibold" style={{ color: COLORS.dim }}>GASTOS Y OTROS INGRESOS</h2>
+        <div className="flex items-center gap-4">
+          <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
+          <OrdenFlecha label="Fecha" campo="fecha" valor={orden} onChange={onOrden} />
+          <OrdenFlecha label="Monto" campo="monto" valor={orden} onChange={onOrden} />
+        </div>
+      </div>
       <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
         {movimientosOrdenados.length === 0 ? (
           <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
-            Aún no has registrado gastos ni otros ingresos.
+            No hay gastos ni otros ingresos {dia ? "este día" : "registrados"}.
           </div>
         ) : (
           movimientosOrdenados.map((m) => (
