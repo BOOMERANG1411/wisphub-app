@@ -1477,7 +1477,7 @@ export default function App() {
           <div className="md:hidden font-display font-semibold text-sm truncate" style={{ maxWidth: 110 }}>
             {empresaActual.nombre}
           </div>
-          {tienePermiso("clientes") ? (
+          {tienePermiso("clientes") || tienePermiso("facturacion") ? (
             <div className="relative flex-1 max-w-md">
               <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: COLORS.dim }} />
               <input
@@ -1486,7 +1486,7 @@ export default function App() {
                 autoComplete="off"
                 style={{ ...inputStyle, paddingLeft: 32, borderRadius: 999 }}
                 placeholder={
-                  tab === "facturacion"
+                  tab === "facturacion" || !tienePermiso("clientes")
                     ? "Buscar factura: cliente, número de factura o IP"
                     : "Buscar cliente, usuario PPPoE o IP"
                 }
@@ -1495,7 +1495,7 @@ export default function App() {
                   setSearch(e.target.value);
                   setPage(1);
                   // En Facturación busca facturas ahí mismo; en las demás pantallas lleva a Clientes.
-                  if (tab !== "clientes" && tab !== "facturacion") setTab("clientes");
+                  if (tab !== "clientes" && tab !== "facturacion") setTab(tienePermiso("clientes") ? "clientes" : "facturacion");
                 }}
               />
             </div>
@@ -1792,8 +1792,9 @@ export default function App() {
                   <option value={100}>Mostrar 100</option>
                   <option value="todos">Mostrar todos</option>
                 </select>
+                <span className="text-xs font-medium" style={{ color: COLORS.dim }}>Ordenar por:</span>
                 <select
-                  style={{ ...inputStyle, width: "auto" }}
+                  style={{ ...inputStyle, width: "auto", borderColor: COLORS.accent + "80" }}
                   value={ordenCliente}
                   onChange={(e) => setOrdenCliente(e.target.value)}
                   title="Ordenar clientes"
@@ -1990,9 +1991,19 @@ export default function App() {
                   <Plus size={16} /> Nuevo plan
                 </Button>
               </div>
-              <div className="flex items-center gap-4 mb-4">
-                <OrdenFlecha label="Nombre" campo="nombre" valor={ordenPlan} onChange={setOrdenPlan} />
-                <OrdenFlecha label="Precio" campo="precio" valor={ordenPlan} onChange={setOrdenPlan} />
+              <div className="flex items-center gap-3 mb-4">
+                <span className="text-xs font-medium" style={{ color: COLORS.dim }}>Ordenar por:</span>
+                <select
+                  style={{ ...inputStyle, width: "auto", borderColor: COLORS.accent + "80" }}
+                  value={ordenPlan}
+                  onChange={(e) => setOrdenPlan(e.target.value)}
+                >
+                  <option value="nombre_asc">Nombre A → Z</option>
+                  <option value="nombre_desc">Nombre Z → A</option>
+                  <option value="precio_asc">Precio menor a mayor</option>
+                  <option value="precio_desc">Precio mayor a menor</option>
+                  <option value="clientes_desc">Más clientes primero</option>
+                </select>
               </div>
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {planes.slice().sort((a, b) => {
@@ -2000,6 +2011,8 @@ export default function App() {
                   if (ordenPlan === "nombre_desc") return (b.nombre || "").localeCompare(a.nombre || "");
                   if (ordenPlan === "precio_asc") return Number(a.precio || 0) - Number(b.precio || 0);
                   if (ordenPlan === "precio_desc") return Number(b.precio || 0) - Number(a.precio || 0);
+                  if (ordenPlan === "clientes_desc")
+                    return clientes.filter((c) => c.plan_id === b.id).length - clientes.filter((c) => c.plan_id === a.id).length;
                   return 0;
                 }).map((p) => {
                   const cantidad = clientes.filter((c) => c.plan_id === p.id).length;
@@ -2103,8 +2116,9 @@ export default function App() {
                     <option value="wisphub">Cobradas en WispHub</option>
                   </select>
                 )}
+                <span className="text-xs font-medium" style={{ color: COLORS.dim }}>Ordenar por:</span>
                 <select
-                  style={{ ...inputStyle, width: "auto" }}
+                  style={{ ...inputStyle, width: "auto", borderColor: COLORS.accent + "80" }}
                   value={ordenFactura || "reciente"}
                   onChange={(e) => setOrdenFactura(e.target.value)}
                   title="Ordenar facturas"
@@ -4173,6 +4187,7 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
 function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, puedeAnular, onAnular, onNuevo, onEditar, onEliminar, orden, onOrden }) {
   // Día que se está mirando (por defecto hoy). Vacío = todos los días.
   const [dia, setDia] = useState(fmtISO(new Date()));
+  const [ordenCobros, setOrdenCobros] = useState("hora_desc");
   const delDia = (fechaISO) => !dia || (fechaISO || "").slice(0, 10) === dia;
   const sumar = (lista) => lista.reduce((s, x) => s + Number(x.monto || 0), 0);
 
@@ -4181,7 +4196,16 @@ function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, p
     .filter((f) => f.estado === "pagada" && f.fecha_pago)
     .filter((f) => !soloUsuario || f.cobrado_por === soloUsuario)
     .filter((f) => !dia || fmtISO(new Date(f.fecha_pago)) === dia)
-    .sort((a, b) => (b.fecha_pago || "").localeCompare(a.fecha_pago || ""));
+    .sort((a, b) => {
+      const na = clientes.find((c) => c.id === a.cliente_id)?.nombre || "";
+      const nb = clientes.find((c) => c.id === b.cliente_id)?.nombre || "";
+      if (ordenCobros === "hora_asc") return (a.fecha_pago || "").localeCompare(b.fecha_pago || "");
+      if (ordenCobros === "nombre_asc") return na.localeCompare(nb, "es", { numeric: true });
+      if (ordenCobros === "nombre_desc") return nb.localeCompare(na, "es", { numeric: true });
+      if (ordenCobros === "monto_desc") return Number(b.monto || 0) - Number(a.monto || 0);
+      if (ordenCobros === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
+      return (b.fecha_pago || "").localeCompare(a.fecha_pago || "");
+    });
   const movsDia = movimientos.filter((m) => delDia(m.fecha));
   const gastos = movsDia.filter((m) => m.tipo === "gasto");
   const ingresos = movsDia.filter((m) => m.tipo === "otro_ingreso");
@@ -4197,7 +4221,7 @@ function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, p
   });
 
   const movimientosOrdenados = movsDia.slice().sort((a, b) => {
-    if (!orden) return 0;
+    if (!orden) return (b.fecha || "").localeCompare(a.fecha || "");
     if (orden === "fecha_asc") return (a.fecha || "").localeCompare(b.fecha || "");
     if (orden === "fecha_desc") return (b.fecha || "").localeCompare(a.fecha || "");
     if (orden === "monto_asc") return Number(a.monto || 0) - Number(b.monto || 0);
@@ -4273,9 +4297,22 @@ function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, p
         </table>
       </div>
 
-      <h2 className="font-display text-sm font-semibold mb-3" style={{ color: COLORS.dim }}>
-        COBROS DE FACTURAS {dia ? `DEL ${dia.split("-").reverse().join("/")}` : "(TODOS)"}
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h2 className="font-display text-sm font-semibold" style={{ color: COLORS.dim }}>
+          COBROS DE FACTURAS {dia ? `DEL ${dia.split("-").reverse().join("/")}` : "(TODOS)"}
+        </h2>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium" style={{ color: COLORS.dim }}>Ordenar por:</span>
+          <select style={{ ...inputStyle, width: "auto", borderColor: COLORS.accent + "80" }} value={ordenCobros} onChange={(e) => setOrdenCobros(e.target.value)}>
+            <option value="hora_desc">Más recientes primero</option>
+            <option value="hora_asc">Más antiguos primero</option>
+            <option value="nombre_asc">Cliente A → Z</option>
+            <option value="nombre_desc">Cliente Z → A</option>
+            <option value="monto_desc">Monto mayor a menor</option>
+            <option value="monto_asc">Monto menor a mayor</option>
+          </select>
+        </div>
+      </div>
       <div className="rounded-xl overflow-hidden mb-8" style={{ border: `1px solid ${COLORS.border}` }}>
         {cobros.length === 0 ? (
           <div className="p-6 text-sm text-center" style={{ color: COLORS.dim, backgroundColor: COLORS.panel }}>
@@ -4312,10 +4349,14 @@ function CajaTab({ movimientos, facturas, clientes, nombreCajero, soloUsuario, p
 
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-display text-sm font-semibold" style={{ color: COLORS.dim }}>GASTOS Y OTROS INGRESOS</h2>
-        <div className="flex items-center gap-4">
-          <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
-          <OrdenFlecha label="Fecha" campo="fecha" valor={orden} onChange={onOrden} />
-          <OrdenFlecha label="Monto" campo="monto" valor={orden} onChange={onOrden} />
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium" style={{ color: COLORS.dim }}>Ordenar por:</span>
+          <select style={{ ...inputStyle, width: "auto", borderColor: COLORS.accent + "80" }} value={orden || "fecha_desc"} onChange={(e) => onOrden(e.target.value)}>
+            <option value="fecha_desc">Más recientes primero</option>
+            <option value="fecha_asc">Más antiguos primero</option>
+            <option value="monto_desc">Monto mayor a menor</option>
+            <option value="monto_asc">Monto menor a mayor</option>
+          </select>
         </div>
       </div>
       <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
