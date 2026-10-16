@@ -539,12 +539,16 @@ export default function App() {
         .from(tabla)
         .select("*")
         .order(orderBy, { ascending })
+        .order("id", { ascending: true }) // desempate fijo: ninguna fila se pierde ni se repite entre páginas
         .range(desde, desde + tam - 1);
       if (error) return { data: null, error };
       todos = todos.concat(data || []);
       if (!data || data.length < tam) break;
       desde += tam;
     }
+    // Por si acaso, nunca dos veces la misma fila.
+    const vistos = new Set();
+    todos = todos.filter((r) => (vistos.has(r.id) ? false : vistos.add(r.id)));
     return { data: todos, error: null };
   };
 
@@ -583,16 +587,28 @@ export default function App() {
     const hoyISO = fmtISO(hoy);
     const nuevas = [];
     const sinPlan = [];
+    // Revisión directa en la base de las facturas de este mes y el siguiente (no depende de lo cargado en pantalla).
+    const desdeMes = fmtISO(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+    const hastaMes = fmtISO(new Date(hoy.getFullYear(), hoy.getMonth() + 2, 1));
+    const { data: existentes, error: errExist } = await supabase
+      .from("facturas")
+      .select("cliente_id,fecha_vencimiento")
+      .gte("fecha_vencimiento", desdeMes)
+      .lt("fecha_vencimiento", hastaMes)
+      .limit(5000);
+    if (errExist) return { creadas: 0, sinPlan: [], error: errExist.message };
+    const yaTiene = new Set((existentes || []).map((f) => `${f.cliente_id}|${String(f.fecha_vencimiento).slice(0, 7)}`));
     for (const cliente of clientesData) {
       if (cliente.estado === "suspendido" || cliente.estado === "cancelado") continue;
       const { generar, vencimiento, periodo } = cicloInfo(cliente.ciclo || 15, hoy);
       if (!generar) continue;
       const vencISO = fmtISO(vencimiento);
       const mesClave = vencISO.slice(0, 7);
-      const yaExiste = facturasData.some(
-        (f) => f.cliente_id === cliente.id && (f.fecha_vencimiento || "").slice(0, 7) === mesClave
-      );
+      const yaExiste =
+        yaTiene.has(`${cliente.id}|${mesClave}`) ||
+        facturasData.some((f) => f.cliente_id === cliente.id && (f.fecha_vencimiento || "").slice(0, 7) === mesClave);
       if (yaExiste) continue;
+      yaTiene.add(`${cliente.id}|${mesClave}`);
       const plan = planesData.find((p) => p.id === cliente.plan_id);
       if (!plan || !Number(plan.precio)) {
         sinPlan.push(cliente.nombre);
