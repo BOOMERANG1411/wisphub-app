@@ -2297,7 +2297,8 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
       const numero = parseInt(txtWH(r["#factura"]).replace(/\D/g, ""), 10);
       if (!numero) { sinNumero++; return; }
       const est = normKey(r["estado"]);
-      if (est.startsWith("cancelad") || est.startsWith("anulad")) {
+      // Canceladas, anuladas y "Se Transfirio" (saldo pasado a otra factura) no son cobros ni deudas.
+      if (est.startsWith("cancelad") || est.startsWith("anulad") || est.startsWith("se transf")) {
         if (!numerosAnulados.has(numero)) anuladas++;
         numerosAnulados.add(numero);
         return;
@@ -2484,7 +2485,7 @@ function analizarWH(archivos, clientesDB, facturasDB, planesDB, mikrotikTexto) {
     const max = Math.max(...nums);
     const huecos = max - min + 1 - nums.length - anuladas;
     if (min > 1) avisos.push(`Tus facturas empiezan en la #${min}. Las anteriores no están en ningún archivo: exporta periodos más viejos de WispHub.`);
-    if (huecos > 20) avisos.push(`Entre la #${min} y la #${max} faltan unos ${huecos} números. Puede que te falte algún periodo en el medio.`);
+    if (huecos > 20) avisos.push(`Entre la #${min} y la #${max} hay unos ${huecos} números que no aparecen en tus archivos. Suelen ser facturas borradas en WispHub; si la prueba de control cuadra, no te falta nada.`);
   }
   if (sinNumero) avisos.push(`${sinNumero} filas de facturas sin número se ignoraron.`);
   if (telRaros) avisos.push(`${telRaros} teléfonos tienen dígitos de más o de menos. Puedes corregirlos después en cada cliente.`);
