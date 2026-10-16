@@ -775,14 +775,24 @@ export default function App() {
   const crearPuntoDePago = async (datos) => {
     const { data: sessionData } = await supabase.auth.getSession();
     const authToken = sessionData?.session?.access_token;
-    const resp = await fetch("/api/create-user", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...datos, authToken }),
-    });
-    const resultado = await resp.json();
+    let resp, resultado;
+    try {
+      resp = await fetch("/api/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...datos, authToken }),
+      });
+      resultado = await resp.json().catch(() => ({}));
+    } catch (err) {
+      setErrorMsg("No hay conexión con el servidor para crear el usuario.");
+      return false;
+    }
+    if (resp.status === 404) {
+      setErrorMsg("Falta el archivo api/create-user.js en GitHub, por eso no se puede crear el punto de pago.");
+      return false;
+    }
     if (!resp.ok) {
-      setErrorMsg(resultado.error || "No se pudo crear el usuario.");
+      setErrorMsg(resultado.error || `No se pudo crear el usuario (error ${resp.status}).`);
       return false;
     }
     await cargarPuntosDePago();
