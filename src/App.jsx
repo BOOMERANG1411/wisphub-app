@@ -3198,10 +3198,7 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
     cargarImagen(empresaMostrar.logoUrl).then(setLogoImg);
   }, [empresaMostrar.logoUrl]);
 
-  const enviarImagen = async () => {
-    setAvisoEnvio("");
-    setEnviando(true);
-    try {
+  const generarBlob = async () => {
       const canvas = dibujarReciboImagen(
         {
           empresa: empresaMostrar,
@@ -3221,7 +3218,43 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
         },
         logoImg
       );
-      const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+      return new Promise((r) => canvas.toBlob(r, "image/png"));
+  };
+
+  // Opción principal: abre el chat del cliente con el recibo escrito y el enlace a la imagen.
+  const enviarWhatsApp = async () => {
+    // La ventana se abre en el mismo toque, si no el navegador la bloquea por "ventana emergente".
+    const ventana = window.open("", "_blank");
+    setAvisoEnvio("");
+    setEnviando(true);
+    let enlaceImagen = null;
+    try {
+      const blob = await generarBlob();
+      const ruta = `recibo-${numeroRecibo}-${factura.id}.png`;
+      const { error } = await supabase.storage
+        .from("recibos")
+        .upload(ruta, blob, { contentType: "image/png", upsert: true });
+      if (error) {
+        setAvisoEnvio("No se pudo subir la imagen del recibo (falta preparar el almacenamiento en Supabase). Se envió solo el texto.");
+      } else {
+        enlaceImagen = `${supabase.storage.from("recibos").getPublicUrl(ruta).data.publicUrl}?v=${Date.now()}`;
+      }
+    } catch (err) {
+      setAvisoEnvio("No se pudo preparar la imagen. Se envió solo el texto.");
+    }
+    const mensaje = enlaceImagen ? `${mensajeWhatsApp}\n\nVer recibo: ${enlaceImagen}` : mensajeWhatsApp;
+    const link = whatsappLink(cliente?.telefono, mensaje);
+    if (ventana) ventana.location.href = link;
+    else window.location.href = link;
+    setEnviando(false);
+  };
+
+  // Opción alterna: compartir el archivo de imagen con el menú del teléfono.
+  const enviarImagen = async () => {
+    setAvisoEnvio("");
+    setEnviando(true);
+    try {
+      const blob = await generarBlob();
       const archivo = new File([blob], `recibo-${numeroRecibo}.png`, { type: "image/png" });
 
       // Celular: abre el menú de compartir del teléfono (eliges WhatsApp y el chat del cliente).
@@ -3359,24 +3392,23 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           <Button variant="ghost" onClick={onClose}>Cerrar</Button>
           <button
             type="button"
-            onClick={enviarImagen}
+            onClick={linkWhatsApp ? enviarWhatsApp : enviarImagen}
             disabled={enviando}
             className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium"
             style={{ backgroundColor: "#25D366", color: "#fff", opacity: enviando ? 0.6 : 1 }}
           >
-            <MessageCircle size={16} /> {enviando ? "Preparando…" : "Enviar imagen por WhatsApp"}
+            <MessageCircle size={16} /> {enviando ? "Preparando…" : linkWhatsApp ? "Enviar por WhatsApp" : "Compartir imagen"}
           </button>
           <Button onClick={() => window.print()}><Printer size={16} /> Imprimir / Guardar PDF</Button>
         </div>
-        <div className="text-right mt-2 no-print">
+        <div className="flex flex-wrap justify-end gap-x-3 mt-2 text-xs no-print" style={{ color: COLORS.dim }}>
           {linkWhatsApp ? (
-            <a href={linkWhatsApp} target="_blank" rel="noreferrer" className="text-xs underline" style={{ color: COLORS.dim }}>
-              o enviarlo como texto directo al chat del cliente
-            </a>
+            <>
+              <button type="button" onClick={enviarImagen} className="underline">Compartir como foto</button>
+              <a href={linkWhatsApp} target="_blank" rel="noreferrer" className="underline">Enviar solo texto</a>
+            </>
           ) : (
-            <span className="text-xs" style={{ color: COLORS.dim }}>
-              Este cliente no tiene teléfono: la imagen la puedes enviar eligiendo el chat a mano.
-            </span>
+            <span>Este cliente no tiene teléfono: elige el chat a mano al compartir.</span>
           )}
         </div>
       </div>
