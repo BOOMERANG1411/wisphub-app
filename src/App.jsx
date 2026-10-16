@@ -116,6 +116,21 @@ function cicloInfo(ciclo, hoy) {
   return { generar, vencimiento, periodo: `${MESES[m]} ${y}` };
 }
 
+// Los próximos n ciclos de un cliente después de la factura dada (para pagos por adelantado).
+function ciclosSiguientes(factura, ciclo, n) {
+  const ref = factura.fecha_vencimiento ? new Date(factura.fecha_vencimiento + "T12:00:00") : new Date();
+  const y = ref.getFullYear();
+  let m = ref.getMonth();
+  // En corte 30 la factura vence el mes siguiente al del servicio.
+  if (Number(ciclo) !== 15 && factura.fecha_vencimiento) m -= 1;
+  const lista = [];
+  for (let k = 1; k <= n; k++) {
+    const { vencimiento, periodo } = cicloInfo(ciclo || 15, new Date(y, m + k, 28));
+    lista.push({ fecha_vencimiento: fmtISO(vencimiento), periodo });
+  }
+  return lista;
+}
+
 // Estado "visual" de una factura: vencida si ya paso su fecha limite de pago sin marcarse como pagada.
 function estadoVisual(factura, hoy) {
   if (factura.estado === "pagada") return "pagada";
@@ -587,6 +602,7 @@ export default function App() {
     const hoyISO = fmtISO(hoy);
     const nuevas = [];
     const sinPlan = [];
+    const usosSaldo = [];
     // Revisión directa en la base de las facturas de este mes y el siguiente (no depende de lo cargado en pantalla).
     const desdeMes = fmtISO(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
     const hastaMes = fmtISO(new Date(hoy.getFullYear(), hoy.getMonth() + 2, 1));
@@ -614,11 +630,18 @@ export default function App() {
         sinPlan.push(cliente.nombre);
         continue;
       }
+      // Si el cliente tiene saldo a favor, se descuenta solo de esta factura.
+      const saldo = Number(cliente.saldo_favor) || 0;
+      const descuento = Math.min(saldo, Number(plan.precio));
+      const monto = Math.round((Number(plan.precio) - descuento) * 100) / 100;
+      if (descuento > 0) usosSaldo.push({ id: cliente.id, saldo: Math.round((saldo - descuento) * 100) / 100 });
       nuevas.push({
         cliente_id: cliente.id,
         periodo,
-        monto: plan.precio,
-        estado: "pendiente",
+        monto,
+        estado: monto > 0 ? "pendiente" : "pagada",
+        forma_pago: monto > 0 ? null : "saldo_favor",
+        fecha_pago: monto > 0 ? null : new Date().toISOString(),
         fecha_vencimiento: vencISO,
         fecha_emision: hoyISO,
       });
@@ -626,8 +649,11 @@ export default function App() {
     let error = null;
     if (nuevas.length > 0) {
       ({ error } = await supabase.from("facturas").insert(nuevas));
-      if (error && /fecha_emision/i.test(error.message || "")) {
-        ({ error } = await supabase.from("facturas").insert(nuevas.map(({ fecha_emision, ...resto }) => resto)));
+      if (error && /fecha_emision|fecha_pago/i.test(error.message || "")) {
+        ({ error } = await supabase.from("facturas").insert(nuevas.map(({ fecha_emision, fecha_pago, ...resto }) => resto)));
+      }
+      if (!error) {
+        for (const u of usosSaldo) await supabase.from("clientes").update({ saldo_favor: u.saldo }).eq("id", u.id);
       }
     }
     return { creadas: error ? 0 : nuevas.length, sinPlan, error: error?.message || null };
@@ -1170,25 +1196,104 @@ export default function App() {
   };
   // Guarda también la fecha y hora del pago (columna fecha_pago) para "Ingresos hoy".
   // Si esa columna todavía no existe en Supabase, el pago se guarda igual sin ella.
-  const markPaid = async (id, formaPago) => {
+  // Registra un pago: completo, abono parcial, o con extra (meses adelantados y/o saldo a favor).
+  const registrarPago = async (factura, { formaPago, recibido, usarExtraEnMeses }) => {
+    const total = Number(factura.monto) || 0;
+    const rec = Math.round(Number(recibido) * 100) / 100;
+    if (!(rec > 0)) return setErrorMsg("El monto recibido debe ser mayor que cero.");
+    const cliente = clientes.find((c) => c.id === factura.cliente_id);
+    const plan = cliente ? planById(cliente.plan_id) : null;
+    const precio = Number(plan?.precio) || 0;
     const { data: userData } = await supabase.auth.getUser();
-    const base = { estado: "pagada", forma_pago: formaPago, cobrado_por: userData?.user?.id || null };
+    const uid = userData?.user?.id || null;
     const fechaPago = new Date().toISOString();
-    let { error } = await supabase
-      .from("facturas")
-      .update({ ...base, fecha_pago: fechaPago })
-      .eq("id", id);
-    if (error && /fecha_pago/i.test(error.message || "")) {
-      ({ error } = await supabase.from("facturas").update(base).eq("id", id));
+    const pagoBase = { estado: "pagada", forma_pago: formaPago, cobrado_por: uid, fecha_pago: fechaPago };
+
+    // Si alguna columna nueva aún no existe en Supabase, se reintenta sin ella.
+    const quitar = (obj, msg) => {
+      const r = { ...obj };
+      ["fecha_pago", "creado_por"].forEach((k) => { if (new RegExp(k, "i").test(msg)) delete r[k]; });
+      return r;
+    };
+    const actualizar = async (id, campos) => {
+      let { error } = await supabase.from("facturas").update(campos).eq("id", id);
+      if (error && /fecha_pago|creado_por/i.test(error.message || "")) {
+        ({ error } = await supabase.from("facturas").update(quitar(campos, error.message)).eq("id", id));
+      }
+      return error;
+    };
+    const insertar = async (filas) => {
+      let { error } = await supabase.from("facturas").insert(filas);
+      if (error && /fecha_pago|creado_por/i.test(error.message || "")) {
+        const msg = error.message;
+        ({ error } = await supabase.from("facturas").insert(filas.map((f) => quitar(f, msg))));
+      }
+      return error;
+    };
+
+    const detalle = { total, recibido: rec, pendiente: 0, saldoFavor: 0, meses: [] };
+    let error = null;
+
+    if (rec < total) {
+      // Abono parcial: esta factura se cobra por lo recibido y el resto queda en una factura nueva.
+      error = await actualizar(factura.id, { ...pagoBase, monto: rec });
+      if (!error) {
+        detalle.pendiente = Math.round((total - rec) * 100) / 100;
+        error = await insertar([{
+          cliente_id: factura.cliente_id,
+          periodo: `${factura.periodo || ""} (saldo)`.trim(),
+          monto: detalle.pendiente,
+          estado: "pendiente",
+          fecha_vencimiento: factura.fecha_vencimiento,
+          creado_por: uid,
+        }]);
+      }
+    } else {
+      let extra = Math.round((rec - total) * 100) / 100;
+      // Meses por adelantado con el extra.
+      const nuevas = [];
+      if (extra > 0 && usarExtraEnMeses && precio > 0 && cliente) {
+        for (const c of ciclosSiguientes(factura, cliente.ciclo, 24)) {
+          const existente = facturas.find(
+            (f) => f.cliente_id === cliente.id && f.id !== factura.id && (f.fecha_vencimiento || "").slice(0, 7) === c.fecha_vencimiento.slice(0, 7)
+          );
+          if (existente?.estado === "pagada") continue;
+          const necesita = existente ? Number(existente.monto) || 0 : precio;
+          if (necesita > extra + 0.001) break;
+          if (existente) {
+            const e = await actualizar(existente.id, pagoBase);
+            if (e) { error = e; break; }
+            detalle.meses.push(existente.periodo || c.periodo);
+          } else {
+            nuevas.push({ cliente_id: cliente.id, periodo: c.periodo, monto: precio, fecha_vencimiento: c.fecha_vencimiento, ...pagoBase, creado_por: uid });
+            detalle.meses.push(c.periodo);
+          }
+          extra = Math.round((extra - necesita) * 100) / 100;
+        }
+      }
+      // Lo que sobra queda dentro de este cobro (para que la caja cuadre) y como saldo a favor del cliente.
+      if (!error) error = await actualizar(factura.id, { ...pagoBase, monto: Math.round((total + Math.max(extra, 0)) * 100) / 100 });
+      if (!error && nuevas.length) error = await insertar(nuevas);
+      if (!error && extra > 0.009 && cliente) {
+        const nuevoSaldo = Math.round(((Number(cliente.saldo_favor) || 0) + extra) * 100) / 100;
+        const { error: e } = await supabase.from("clientes").update({ saldo_favor: nuevoSaldo }).eq("id", cliente.id);
+        if (e) {
+          setErrorMsg(/saldo_favor/i.test(e.message || "")
+            ? `El pago se guardó, pero falta preparar el saldo a favor en Supabase: no se anotaron ${money(extra)} a favor del cliente.`
+            : e.message);
+        } else detalle.saldoFavor = nuevoSaldo;
+      }
     }
-    if (error) setErrorMsg(error.message);
-    else {
-      const pagada = facturas.find((f) => f.id === id);
-      setPagoModal(null);
-      if (pagada) setReciboModal({ ...pagada, ...base, fecha_pago: fechaPago, recienPagada: true });
-      loadAll();
+
+    if (error) {
+      setErrorMsg(error.message || "No se pudo registrar el pago.");
+      return;
     }
+    setPagoModal(null);
+    setReciboModal({ ...factura, ...pagoBase, monto: detalle.recibido < total ? rec : factura.monto, recienPagada: true, detallePago: detalle });
+    loadAll();
   };
+
   // Anular un pago hecho por error: la factura vuelve a quedar pendiente.
   // El administrador puede anular cualquiera; un cajero solo los suyos del mismo día.
   // Si el pago ya se liquidó al punto de pago, no se puede (descuadraría su comisión).
@@ -2399,7 +2504,9 @@ export default function App() {
         <PagoForm
           factura={pagoModal}
           onCancel={() => setPagoModal(null)}
-          onSave={(formaPago) => markPaid(pagoModal.id, formaPago)}
+          cliente={clientes.find((c) => c.id === pagoModal.cliente_id)}
+          plan={planById(clientes.find((c) => c.id === pagoModal.cliente_id)?.plan_id)}
+          onSave={(datos) => registrarPago(pagoModal, datos)}
         />
       )}
       {movimientoModal && (
@@ -3449,6 +3556,7 @@ function dibujarReciboImagen(d, logo) {
   fila("Su pago:", d.suPago);
   raya();
   fila("Nuevo saldo pendiente:", d.saldo, true);
+  (d.extras || []).forEach((t) => { partir(t, "13px Arial", W - P * 2).forEach((l) => { texto(l, "13px Arial", "#1f6feb"); y += 19; }); });
   y += 8;
   texto(`Facturado por: ${d.cajero}`, "12px Arial", "#555");
   y += 28;
@@ -3471,6 +3579,15 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   const escala = tamano === "chico" ? 0.8 : tamano === "grande" ? 1.25 : 1;
   const sz = (n) => Math.round(n * escala);
   const formaPagoTexto = FORMAS_PAGO.find((f) => f.value === factura.forma_pago)?.label || "—";
+  // Si el recibo viene de un pago recién hecho, se usan los montos reales (abono, adelanto, saldo a favor).
+  const det = factura.detallePago;
+  const subtotalV = det ? det.total : Number(factura.monto) || 0;
+  const suPagoV = det ? det.recibido : pagada ? Number(factura.monto) || 0 : 0;
+  const saldoV = det ? det.pendiente : pagada ? 0 : Number(factura.monto) || 0;
+  const extrasRecibo = [
+    det?.meses?.length ? `Meses adelantados: ${det.meses.join(", ")}` : "",
+    det?.saldoFavor > 0 ? `Saldo a favor: ${money(det.saldoFavor)}` : "",
+  ].filter(Boolean);
 
   // Mismo recibo, en texto, para mandarlo por WhatsApp (los * ponen negrita en WhatsApp).
   const mensajeWhatsApp = [
@@ -3482,9 +3599,10 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
     `Servicio: Internet${plan ? ` - Plan ${plan.nombre}` : ""}`,
     `Periodo: ${factura.periodo || "—"}`,
     "",
-    pagada ? `*Monto pagado: ${money(factura.monto)}*` : `*Monto a pagar: ${money(factura.monto)}*`,
+    pagada ? `*Monto pagado: ${money(suPagoV)}*` : `*Monto a pagar: ${money(factura.monto)}*`,
     pagada ? `Forma de pago: ${formaPagoTexto}` : `Vence: ${factura.fecha_vencimiento || "—"}`,
-    `Saldo pendiente: ${pagada ? money(0) : money(factura.monto)}`,
+    `Saldo pendiente: ${money(saldoV)}`,
+    ...extrasRecibo,
     "",
     pagada ? "¡Gracias por su pago!" : "Gracias por su preferencia.",
     empresaMostrar.telefono ? `Tel: ${empresaMostrar.telefono}` : "",
@@ -3515,10 +3633,11 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           formaPago: pagada ? formaPagoTexto : "—",
           servicio: `Servicio de Internet${plan ? ` — Plan ${plan.nombre}` : ""}`,
           periodo: `Periodo: ${factura.periodo || "—"}${factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}`,
-          subtotal: money(factura.monto),
+          subtotal: money(subtotalV),
           descuento: money(0),
-          suPago: pagada ? money(factura.monto) : money(0),
-          saldo: pagada ? money(0) : money(factura.monto),
+          suPago: money(suPagoV),
+          saldo: money(saldoV),
+          extras: extrasRecibo,
           cajero: cajeroNombre || "Administrador",
         },
         logoImg
@@ -3666,13 +3785,16 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           </div>
 
           <div style={{ fontSize: sz(formato === "termica" ? 16 : 17), marginBottom: 4 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(factura.monto)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal:</span><span>{money(subtotalV)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Descuento:</span><span>{money(0)}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{pagada ? money(factura.monto) : money(0)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Su pago:</span><span>{money(suPagoV)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: sz(formato === "termica" ? 19 : 20), marginTop: 4, borderTop: "1px dashed #999", paddingTop: 4 }}>
               <span>Nuevo saldo pendiente:</span>
-              <span>{pagada ? money(0) : money(factura.monto)}</span>
+              <span>{money(saldoV)}</span>
             </div>
+            {extrasRecibo.map((t) => (
+              <div key={t} style={{ fontSize: sz(formato === "termica" ? 13 : 14), marginTop: 4 }}>{t}</div>
+            ))}
           </div>
 
           <div style={{ fontSize: sz(formato === "termica" ? 13 : 14), color: "#555", marginTop: 6 }}>
@@ -3721,11 +3843,77 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   );
 }
 
-function PagoForm({ factura, onCancel, onSave }) {
+function PagoForm({ factura, cliente, plan, onCancel, onSave }) {
+  const total = Number(factura.monto) || 0;
+  const precio = Number(plan?.precio) || 0;
   const [formaPago, setFormaPago] = useState("efectivo");
+  const [recibido, setRecibido] = useState(String(total));
+  const [usarMeses, setUsarMeses] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+
+  const rec = Math.round((parseFloat(recibido) || 0) * 100) / 100;
+  const extra = Math.round((rec - total) * 100) / 100;
+  const meses = usarMeses && precio > 0 && extra > 0 ? Math.floor(extra / precio) : 0;
+  const resto = Math.round((extra - meses * precio) * 100) / 100;
+  const saldoActual = Number(cliente?.saldo_favor) || 0;
+
+  const aviso =
+    rec <= 0
+      ? { color: COLORS.danger, texto: "Escribe cuánto te entregó el cliente." }
+      : extra < 0
+      ? { color: COLORS.warn, texto: `Abono parcial. Esta factura queda pagada por ${money(rec)} y se crea otra pendiente por ${money(-extra)} con el mismo vencimiento.` }
+      : extra === 0
+      ? { color: COLORS.active, texto: "Pago completo." }
+      : {
+          color: COLORS.accent,
+          texto: [
+            meses > 0 ? `Se pagan ${meses} mes${meses > 1 ? "es" : ""} por adelantado (${money(meses * precio)}).` : "",
+            resto > 0 ? `${money(resto)} quedan como saldo a favor y se descuentan solos de su próxima factura.` : "",
+          ].filter(Boolean).join(" "),
+        };
+
   return (
-    <Modal title="Marcar factura como pagada" onClose={onCancel}>
-      <p className="text-xs mb-3" style={{ color: COLORS.dim }}>Monto: {money(factura.monto)}</p>
+    <Modal title="Registrar pago" onClose={onCancel}>
+      <div className="rounded-lg p-3 mb-3 text-sm" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+        <div className="font-medium">{cliente?.nombre || "Cliente"}</div>
+        <div className="text-xs mt-1" style={{ color: COLORS.dim }}>
+          Factura {factura.periodo || ""}: <span style={{ color: COLORS.text }}>{money(total)}</span>
+          {saldoActual > 0 && <> · Saldo a favor actual: <span style={{ color: COLORS.active }}>{money(saldoActual)}</span></>}
+        </div>
+      </div>
+
+      <Field label="Monto recibido (RD$)">
+        <input type="number" style={{ ...inputStyle, fontSize: 18 }} value={recibido} onChange={(e) => setRecibido(e.target.value)} />
+      </Field>
+      <div className="flex flex-wrap gap-2 mb-3">
+        <button type="button" onClick={() => setRecibido(String(total))} className="rounded-lg px-2 py-1 text-xs" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+          Exacto
+        </button>
+        {precio > 0 &&
+          [1, 2, 3, 6].map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => { setRecibido(String(total + n * precio)); setUsarMeses(true); }}
+              className="rounded-lg px-2 py-1 text-xs"
+              style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}
+            >
+              + {n} mes{n > 1 ? "es" : ""} adelantado{n > 1 ? "s" : ""}
+            </button>
+          ))}
+      </div>
+
+      {extra > 0 && precio > 0 && extra >= precio && (
+        <label className="flex items-center gap-2 text-xs mb-3" style={{ color: COLORS.dim }}>
+          <input type="checkbox" checked={usarMeses} onChange={(e) => setUsarMeses(e.target.checked)} />
+          Usar el extra para pagar meses por adelantado (si no, todo queda como saldo a favor)
+        </label>
+      )}
+
+      <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ color: aviso.color, backgroundColor: aviso.color + "14", border: `1px solid ${aviso.color}40` }}>
+        {aviso.texto}
+      </div>
+
       <Field label="Forma de pago">
         <select style={inputStyle} value={formaPago} onChange={(e) => setFormaPago(e.target.value)}>
           {FORMAS_PAGO.map((f) => (
@@ -3735,7 +3923,16 @@ function PagoForm({ factura, onCancel, onSave }) {
       </Field>
       <div className="flex justify-end gap-2 mt-4">
         <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
-        <Button onClick={() => onSave(formaPago)}>Confirmar pago</Button>
+        <Button
+          disabled={rec <= 0 || guardando}
+          onClick={async () => {
+            setGuardando(true);
+            await onSave({ formaPago, recibido: rec, usarExtraEnMeses: usarMeses });
+            setGuardando(false);
+          }}
+        >
+          {guardando ? "Guardando…" : `Confirmar pago de ${money(rec)}`}
+        </Button>
       </div>
     </Modal>
   );
