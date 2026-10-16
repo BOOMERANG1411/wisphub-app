@@ -809,6 +809,27 @@ export default function App() {
     return true;
   };
 
+  // Ver correo, cambiar correo/contraseña o eliminar un punto de pago (api/manage-user.js).
+  const gestionarUsuario = async (accion, datos) => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const authToken = sessionData?.session?.access_token;
+    let resp, resultado;
+    try {
+      resp = await fetch("/api/manage-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...datos, accion, authToken }),
+      });
+      resultado = await resp.json().catch(() => ({}));
+    } catch (err) {
+      return { error: "No hay conexión con el servidor." };
+    }
+    if (resp.status === 404) return { error: "Falta el archivo api/manage-user.js en GitHub." };
+    if (!resp.ok) return { error: resultado.error || `Error ${resp.status}` };
+    if (accion !== "info") await cargarPuntosDePago();
+    return resultado;
+  };
+
   const liquidarCajero = async (cajero) => {
     const pendientes = facturas.filter((f) => f.cobrado_por === cajero.user_id && f.estado === "pagada" && !f.liquidado);
     if (pendientes.length === 0) return;
@@ -959,7 +980,7 @@ export default function App() {
     return <LoginScreen onLogin={setSession} />;
   }
 
-  if (perfil && perfil.rol === "sin_acceso") {
+  if (perfil && (perfil.rol === "sin_acceso" || perfil.rol === "eliminado")) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center" style={{ backgroundColor: COLORS.bg, color: COLORS.text }}>
         <p className="text-sm" style={{ color: COLORS.dim }}>
@@ -2026,6 +2047,7 @@ export default function App() {
               liquidaciones={liquidaciones}
               facturas={facturas}
               onGuardarComision={guardarComision}
+              onGestionar={gestionarUsuario}
               onLiquidar={liquidarCajero}
               onCrear={crearPuntoDePago}
             />
@@ -3679,8 +3701,10 @@ function CrearPuntoDePagoForm({ onCancel, onCrear }) {
   );
 }
 
-function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComision, onLiquidar, onCrear }) {
+function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComision, onGestionar, onLiquidar, onCrear }) {
   const [editando, setEditando] = useState({});
+  const [errorEdicion, setErrorEdicion] = useState("");
+  const [guardandoEd, setGuardandoEd] = useState(false);
   const [mostrarCrear, setMostrarCrear] = useState(false);
 
   const cajeros = puntosDePago.filter((p) => p.rol === "cajero");
@@ -3695,10 +3719,63 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
     return { cantidad: pendientes.length, monto, comision };
   };
 
-  const iniciarEdicion = (c) => setEditando({ user_id: c.user_id, comision_tipo: c.comision_tipo || "porcentaje", comision_valor: c.comision_valor || 0, nombre: c.nombre || "", permisos: c.permisos || [] });
-  const guardarEdicion = () => {
-    onGuardarComision(editando.user_id, editando.comision_tipo, parseFloat(editando.comision_valor) || 0, editando.nombre, editando.permisos);
+  const iniciarEdicion = async (c) => {
+    setErrorEdicion("");
+    setEditando({
+      user_id: c.user_id,
+      comision_tipo: c.comision_tipo || "porcentaje",
+      comision_valor: c.comision_valor || 0,
+      nombre: c.nombre || "",
+      permisos: c.permisos || [],
+      email: "",
+      emailOriginal: "",
+      password: "",
+      cargandoEmail: true,
+    });
+    const info = await onGestionar("info", { user_id: c.user_id });
+    setEditando((e) =>
+      e.user_id === c.user_id
+        ? { ...e, email: info.email || "", emailOriginal: info.email || "", cargandoEmail: false }
+        : e
+    );
+    if (info.error) setErrorEdicion(info.error);
+  };
+  const guardarEdicion = async () => {
+    setErrorEdicion("");
+    if (editando.password && editando.password.length < 6) {
+      setErrorEdicion("La contraseña nueva debe tener al menos 6 caracteres.");
+      return;
+    }
+    setGuardandoEd(true);
+    const cambioEmail = editando.email && editando.email.trim().toLowerCase() !== editando.emailOriginal;
+    if (cambioEmail || editando.password) {
+      const r = await onGestionar("actualizar", {
+        user_id: editando.user_id,
+        email: cambioEmail ? editando.email : undefined,
+        password: editando.password || undefined,
+      });
+      if (r.error) {
+        setErrorEdicion(r.error);
+        setGuardandoEd(false);
+        return;
+      }
+    }
+    await onGuardarComision(editando.user_id, editando.comision_tipo, parseFloat(editando.comision_valor) || 0, editando.nombre, editando.permisos);
+    setGuardandoEd(false);
     setEditando({});
+  };
+  const eliminar = async (c) => {
+    const { cantidad, monto } = datosDe(c);
+    const aviso =
+      cantidad > 0
+        ? `${c.nombre} tiene ${cantidad} cobros por ${money(monto)} sin liquidar. Liquídalo antes de eliminarlo.\n\n¿Eliminarlo de todos modos?`
+        : `¿Eliminar el punto de pago ${c.nombre}? Ya no podrá entrar a la app. Su historial de cobros se conserva.`;
+    if (!window.confirm(aviso)) return;
+    setGuardandoEd(true);
+    const r = await onGestionar("eliminar", { user_id: c.user_id });
+    setGuardandoEd(false);
+    if (r.error) setErrorEdicion(r.error);
+    else setEditando({});
   };
   const toggleEditPermiso = (id) => {
     setEditando((e) => ({ ...e, permisos: (e.permisos || []).includes(id) ? e.permisos.filter((p) => p !== id) : [...(e.permisos || []), id] }));
@@ -3732,6 +3809,24 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
                     <Field label="Nombre">
                       <input style={inputStyle} value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} />
                     </Field>
+                    <Field label="Correo (para iniciar sesión)">
+                      <input
+                        type="email"
+                        style={inputStyle}
+                        value={editando.cargandoEmail ? "Cargando…" : editando.email}
+                        disabled={editando.cargandoEmail}
+                        onChange={(e) => setEditando({ ...editando, email: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Nueva contraseña (déjala vacía para no cambiarla)">
+                      <input
+                        type="text"
+                        style={inputStyle}
+                        value={editando.password}
+                        placeholder="Mínimo 6 caracteres"
+                        onChange={(e) => setEditando({ ...editando, password: e.target.value })}
+                      />
+                    </Field>
                     <Field label="Tipo de comisión">
                       <select style={inputStyle} value={editando.comision_tipo} onChange={(e) => setEditando({ ...editando, comision_tipo: e.target.value })}>
                         <option value="porcentaje">Porcentaje de lo cobrado</option>
@@ -3760,9 +3855,17 @@ function PuntosDePagoTab({ puntosDePago, liquidaciones, facturas, onGuardarComis
                         ))}
                       </div>
                     </Field>
-                    <div className="flex justify-end gap-2">
-                      <Button variant="ghost" onClick={() => setEditando({})}>Cancelar</Button>
-                      <Button onClick={guardarEdicion}>Guardar</Button>
+                    {errorEdicion && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{errorEdicion}</p>}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Button variant="danger" onClick={() => eliminar(c)} disabled={guardandoEd}>
+                        <Trash2 size={14} /> Eliminar
+                      </Button>
+                      <div className="flex gap-2">
+                        <Button variant="ghost" onClick={() => setEditando({})}>Cancelar</Button>
+                        <Button onClick={guardarEdicion} disabled={guardandoEd || editando.cargandoEmail}>
+                          {guardandoEd ? "Guardando…" : "Guardar"}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ) : (
