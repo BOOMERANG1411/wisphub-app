@@ -93,17 +93,23 @@ function parseFechaFlexible(str) {
 
 // Para el ciclo del cliente y la fecha de hoy, calcula si ya toca generar factura
 // y cuáles son sus fechas clave (vencimiento y suspensión).
+// Reglas del negocio:
+//   Corte 15: la factura se genera el día 9 y vence (último día de gracia) el 20 del mismo mes.
+//   Corte 30: la factura se genera el día 24 y vence el 5 del mes siguiente.
+const DIA_GENERAR_15 = 9;
+const DIA_GENERAR_30 = 24;
+
 function cicloInfo(ciclo, hoy) {
   const y = hoy.getFullYear();
   const m = hoy.getMonth();
   const dia = hoy.getDate();
-  if (ciclo === 15) {
-    const generar = dia >= 10;
+  if (Number(ciclo) === 15) {
+    const generar = dia >= DIA_GENERAR_15;
     const vencimiento = new Date(y, m, 20);
     return { generar, vencimiento, periodo: `${MESES[m]} ${y}` };
   }
   // ciclo 30: el limite real de pago es el dia 5 del mes siguiente
-  const generar = dia >= 25;
+  const generar = dia >= DIA_GENERAR_30;
   const vMes = m === 11 ? 0 : m + 1;
   const vAnio = m === 11 ? y + 1 : y;
   const vencimiento = new Date(vAnio, vMes, 5);
@@ -491,6 +497,9 @@ export default function App() {
   const [ordenPlan, setOrdenPlan] = useState("nombre_asc");
   const [ordenFactura, setOrdenFactura] = useState("");
   const [ordenCaja, setOrdenCaja] = useState("");
+  const [cobradorFiltro, setCobradorFiltro] = useState("todos");
+  const [avisoMsg, setAvisoMsg] = useState("");
+  const [generando, setGenerando] = useState(false);
   const [clientModal, setClientModal] = useState(null);
   const [planModal, setPlanModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
@@ -567,9 +576,13 @@ export default function App() {
   }, []);
 
   // Revisa si a algún cliente ya le toca factura este ciclo y, si no existe todavía, la crea.
+  // Genera la factura del ciclo a cada cliente activo que todavía no la tenga.
+  // Una sola factura por cliente y mes de vencimiento, así nunca se duplica.
   const generarFacturasDelCiclo = async (clientesData, planesData, facturasData) => {
     const hoy = new Date();
+    const hoyISO = fmtISO(hoy);
     const nuevas = [];
+    const sinPlan = [];
     for (const cliente of clientesData) {
       if (cliente.estado === "suspendido" || cliente.estado === "cancelado") continue;
       const { generar, vencimiento, periodo } = cicloInfo(cliente.ciclo || 15, hoy);
@@ -577,23 +590,31 @@ export default function App() {
       const vencISO = fmtISO(vencimiento);
       const mesClave = vencISO.slice(0, 7);
       const yaExiste = facturasData.some(
-        (f) =>
-          f.cliente_id === cliente.id &&
-          (f.fecha_vencimiento === vencISO || (f.estado === "pagada" && (f.fecha_vencimiento || "").slice(0, 7) === mesClave))
+        (f) => f.cliente_id === cliente.id && (f.fecha_vencimiento || "").slice(0, 7) === mesClave
       );
       if (yaExiste) continue;
       const plan = planesData.find((p) => p.id === cliente.plan_id);
+      if (!plan || !Number(plan.precio)) {
+        sinPlan.push(cliente.nombre);
+        continue;
+      }
       nuevas.push({
         cliente_id: cliente.id,
         periodo,
-        monto: plan ? plan.precio : 0,
+        monto: plan.precio,
         estado: "pendiente",
         fecha_vencimiento: vencISO,
+        fecha_emision: hoyISO,
       });
     }
+    let error = null;
     if (nuevas.length > 0) {
-      await supabase.from("facturas").insert(nuevas);
+      ({ error } = await supabase.from("facturas").insert(nuevas));
+      if (error && /fecha_emision/i.test(error.message || "")) {
+        ({ error } = await supabase.from("facturas").insert(nuevas.map(({ fecha_emision, ...resto }) => resto)));
+      }
     }
+    return { creadas: error ? 0 : nuevas.length, sinPlan, error: error?.message || null };
   };
 
   useEffect(() => {
@@ -1012,6 +1033,19 @@ export default function App() {
 
   const planById = (id) => planes.find((p) => p.id === id);
 
+  // Quién cobró y quién creó cada factura, para llevar control.
+  const quienCobro = (f) => {
+    if (f.estado !== "pagada") return null;
+    if (f.cobrado_por) return nombreCajero(f.cobrado_por) || "Usuario eliminado";
+    if (f.cajero) return `${f.cajero} (WispHub)`;
+    return "Sin registrar";
+  };
+  const quienCreo = (f) => {
+    if (f.creado_por) return nombreCajero(f.creado_por) || "Usuario eliminado";
+    if (f.numero_wisphub) return "WispHub";
+    return "Sistema (automática)";
+  };
+
   /* ----- Clientes ----- */
   const saveClient = async (form) => {
     const payload = {
@@ -1074,10 +1108,15 @@ export default function App() {
       fecha_vencimiento: form.fechaVencimiento || null,
       estado: form.estado,
     };
-    const q = form.id
-      ? supabase.from("facturas").update(payload).eq("id", form.id)
-      : supabase.from("facturas").insert(payload);
-    const { error } = await q;
+    let error;
+    if (form.id) {
+      ({ error } = await supabase.from("facturas").update(payload).eq("id", form.id));
+    } else {
+      ({ error } = await supabase.from("facturas").insert({ ...payload, creado_por: miUserId || null }));
+      if (error && /creado_por/i.test(error.message || "")) {
+        ({ error } = await supabase.from("facturas").insert(payload));
+      }
+    }
     if (error) setErrorMsg(error.message);
     else {
       setInvoiceModal(null);
@@ -1127,6 +1166,24 @@ export default function App() {
     }
     if (error) setErrorMsg(error.message);
     else loadAll();
+  };
+
+  const generarAhora = async () => {
+    setGenerando(true);
+    const r = await generarFacturasDelCiclo(clientes, planes, facturas);
+    setGenerando(false);
+    if (r.error) {
+      setErrorMsg(`No se pudieron generar las facturas: ${r.error}`);
+      return;
+    }
+    const partes = [
+      r.creadas
+        ? `Se generaron ${r.creadas} facturas del ciclo actual.`
+        : "Todos los clientes a los que ya les toca ya tienen su factura de este ciclo.",
+    ];
+    if (r.sinPlan.length) partes.push(`${r.sinPlan.length} clientes no tienen plan con precio y se saltaron: ${r.sinPlan.slice(0, 5).join(", ")}${r.sinPlan.length > 5 ? "…" : ""}`);
+    setAvisoMsg(partes.join(" "));
+    loadAll();
   };
 
   const saveMovimiento = async (mov) => {
@@ -1419,6 +1476,15 @@ export default function App() {
         </header>
 
         <main className="flex-1 px-4 md:px-8 py-6 pb-28 md:pb-10">
+          {avisoMsg && (
+            <div
+              className="mb-4 rounded-lg px-3 py-2 text-xs flex items-start justify-between gap-3"
+              style={{ backgroundColor: COLORS.active + "1A", color: COLORS.active, border: `1px solid ${COLORS.active}40` }}
+            >
+              <span>{avisoMsg}</span>
+              <button onClick={() => setAvisoMsg("")} title="Cerrar aviso"><X size={14} /></button>
+            </div>
+          )}
           {errorMsg && (
             <div
               className="mb-4 rounded-lg px-3 py-2 text-xs flex items-start justify-between gap-3"
@@ -1924,6 +1990,9 @@ export default function App() {
                       <Button variant="ghost" onClick={() => setMigracionModal(true)}>
                         <Upload size={16} /> Importar de WispHub
                       </Button>
+                      <Button variant="ghost" onClick={generarAhora} disabled={generando}>
+                        <CalendarPlus size={16} /> {generando ? "Generando…" : "Generar facturas del ciclo"}
+                      </Button>
                       <Button onClick={() => setInvoiceModal({})}>
                         <Plus size={16} /> Nueva factura
                       </Button>
@@ -1949,7 +2018,25 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <div className="flex items-center gap-4 mb-3">
+              <div className="flex flex-wrap items-center gap-4 mb-3">
+                {!esCajero && (
+                  <select
+                    style={{ ...inputStyle, width: "auto" }}
+                    value={cobradorFiltro}
+                    onChange={(e) => setCobradorFiltro(e.target.value)}
+                  >
+                    <option value="todos">Cobradas por: todos</option>
+                    <option value={miUserId}>Cobradas por: {perfil?.nombre || "mí"}</option>
+                    {puntosDePago
+                      .filter((p) => p.user_id !== miUserId && p.rol !== "admin")
+                      .map((p) => (
+                        <option key={p.user_id} value={p.user_id}>
+                          Cobradas por: {p.nombre || "Sin nombre"}{p.rol === "eliminado" ? " (eliminado)" : ""}
+                        </option>
+                      ))}
+                    <option value="wisphub">Cobradas en WispHub</option>
+                  </select>
+                )}
                 <span className="text-xs" style={{ color: COLORS.dim }}>Ordenar:</span>
                 <OrdenFlecha label="Cliente" campo="cliente" valor={ordenFactura} onChange={setOrdenFactura} />
                 <OrdenFlecha label="Monto" campo="monto" valor={ordenFactura} onChange={setOrdenFactura} />
@@ -1961,6 +2048,12 @@ export default function App() {
                     .slice()
                     .reverse()
                     .filter((f) => (esCajero ? f.estado !== "pagada" || f.cobrado_por === miUserId : true))
+                    .filter((f) => {
+                      if (esCajero || cobradorFiltro === "todos") return true;
+                      if (f.estado !== "pagada") return false;
+                      if (cobradorFiltro === "wisphub") return !f.cobrado_por && !!f.cajero;
+                      return f.cobrado_por === cobradorFiltro;
+                    })
                     .filter((f) => {
                       if (facturaFiltro === "todas") return true;
                       const visual = estadoVisual(f, new Date());
@@ -2003,6 +2096,15 @@ export default function App() {
                           <div className="text-xs" style={{ color: COLORS.dim }}>
                             {f.numero_wisphub ? `#${f.numero_wisphub} · ` : ""}Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
                             {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
+                          </div>
+                          <div className="text-xs mt-0.5" style={{ color: COLORS.dim }}>
+                            Creada por: <span style={{ color: COLORS.text }}>{quienCreo(f)}</span>
+                            {quienCobro(f) && (
+                              <>
+                                {" · "}Cobrada por: <span style={{ color: COLORS.active }}>{quienCobro(f)}</span>
+                                {f.fecha_pago && ` el ${new Date(f.fecha_pago).toLocaleString("es-DO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`}
+                              </>
+                            )}
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
@@ -2234,7 +2336,7 @@ export default function App() {
           factura={reciboModal}
           cliente={clientes.find((c) => c.id === reciboModal.cliente_id)}
           plan={planById(clientes.find((c) => c.id === reciboModal.cliente_id)?.plan_id)}
-          cajeroNombre={nombreCajero(reciboModal.cobrado_por)}
+          cajeroNombre={nombreCajero(reciboModal.cobrado_por) || reciboModal.cajero}
           empresa={empresaActual}
           tamano={config?.tamano_recibo || "mediano"}
           formatoDefault={config?.formato_recibo || "termica"}
