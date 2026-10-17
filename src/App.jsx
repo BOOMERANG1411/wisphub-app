@@ -131,6 +131,23 @@ function ciclosSiguientes(factura, ciclo, n) {
   return lista;
 }
 
+// ¿El cliente coincide con lo que se escribió? Busca en nombre, usuario PPPoE, IP, dirección y teléfono.
+// El teléfono se compara solo por sus dígitos: 809-486-3357, (809) 486 3357 y 8094863357 son lo mismo.
+function clienteCoincide(c, texto) {
+  if (!c) return false;
+  const q = String(texto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  if (!q) return true;
+  const norm = (v) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if ([c.nombre, c.pppoe_usuario, c.ip_asignada, c.direccion, c.telefono].some((v) => norm(v).includes(q))) return true;
+  const digitosQ = q.replace(/\D/g, "");
+  if (digitosQ.length >= 4 && digitosQ.length === q.replace(/[\s\-().+]/g, "").length) {
+    const tel = String(c.telefono || "").replace(/\D/g, "");
+    const sinUno = (d) => (d.length === 11 && d.startsWith("1") ? d.slice(1) : d);
+    return sinUno(tel).includes(sinUno(digitosQ));
+  }
+  return false;
+}
+
 // Estado "visual" de una factura: vencida si ya paso su fecha limite de pago sin marcarse como pagada.
 function estadoVisual(factura, hoy) {
   if (factura.estado === "pagada") return "pagada";
@@ -1432,7 +1449,7 @@ export default function App() {
   const q = search.toLowerCase().trim();
   const baseClientes = clientesVista === "atraso" ? clientesEnAtraso : clientes;
   const filteredClients = baseClientes
-    .filter((c) => !q || [c.nombre, c.pppoe_usuario, c.ip_asignada, c.telefono, c.direccion].some((v) => (v || "").toLowerCase().includes(q)))
+    .filter((c) => clienteCoincide(c, q))
     .filter((c) => clienteFiltro === "todos" || c.estado === clienteFiltro)
     .slice()
     .sort((a, b) => {
@@ -1608,8 +1625,8 @@ export default function App() {
                 style={{ ...inputStyle, paddingLeft: 32, borderRadius: 999 }}
                 placeholder={
                   tab === "facturacion" || !tienePermiso("clientes")
-                    ? "Buscar factura: cliente, número de factura o IP"
-                    : "Buscar cliente, usuario PPPoE o IP"
+                    ? "Buscar factura: cliente, teléfono, # de factura o IP"
+                    : "Buscar cliente, teléfono, usuario PPPoE o IP"
                 }
                 value={search}
                 onChange={(e) => {
@@ -2214,7 +2231,7 @@ export default function App() {
                     type="search"
                     autoComplete="off"
                     style={{ ...inputStyle, paddingLeft: 32 }}
-                    placeholder="Buscar cliente o # de factura"
+                    placeholder="Cliente, teléfono o # de factura"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -2276,7 +2293,7 @@ export default function App() {
                       const c = clientes.find((x) => x.id === f.cliente_id);
                       return (
                         String(f.numero_wisphub || "") === qf ||
-                        [c?.nombre, c?.pppoe_usuario, c?.ip_asignada, c?.telefono].some((v) => normKey(v).includes(qf))
+                        clienteCoincide(c, qf)
                       );
                     })
                     .filter((f) => {
@@ -6306,7 +6323,7 @@ function BuscadorCliente({ clientes, planById, valor, onElegir }) {
   const elegido = clientes.find((c) => c.id === valor);
   const q = normKey(texto);
   const resultados = clientes
-    .filter((c) => !q || [c.nombre, c.pppoe_usuario, c.ip_asignada, c.telefono].some((v) => normKey(v).includes(q)))
+    .filter((c) => clienteCoincide(c, texto))
     .sort(
       (a, b) =>
         (a.estado === "cancelado") - (b.estado === "cancelado") || (a.nombre || "").localeCompare(b.nombre || "")
@@ -6340,7 +6357,7 @@ function BuscadorCliente({ clientes, planById, valor, onElegir }) {
         <input
           autoFocus
           style={{ ...inputStyle, paddingLeft: 32 }}
-          placeholder="Escribe nombre, número, usuario PPPoE, IP o teléfono"
+          placeholder="Nombre, código, teléfono, usuario PPPoE o IP"
           value={texto}
           onChange={(e) => setTexto(e.target.value)}
         />
