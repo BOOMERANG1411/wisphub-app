@@ -547,6 +547,7 @@ export default function App() {
   const [importHistorialModal, setImportHistorialModal] = useState(false);
   const [reciboModal, setReciboModal] = useState(null);
   const [migracionModal, setMigracionModal] = useState(false);
+  const [cargoModal, setCargoModal] = useState(null);
 
   // Supabase renueva la sesión sola cada cierto tiempo (y al volver a la pestaña).
   // Eso NO debe recargar la app: solo recargamos si cambia el usuario.
@@ -1196,11 +1197,16 @@ export default function App() {
       fecha_vencimiento: form.fechaVencimiento || null,
       estado: form.estado,
     };
+    if (form.cargos && form.cargos.length) payload.cargos = form.cargos;
     let error;
     if (form.id) {
       ({ error } = await supabase.from("facturas").update(payload).eq("id", form.id));
     } else {
       ({ error } = await supabase.from("facturas").insert({ ...payload, creado_por: miUserId || null }));
+      if (error && /cargos/i.test(error.message || "")) {
+        setErrorMsg("Para guardar cargos adicionales falta preparar la base de datos en Supabase (ver instrucciones).");
+        return;
+      }
       if (error && /creado_por/i.test(error.message || "")) {
         ({ error } = await supabase.from("facturas").insert(payload));
       }
@@ -1350,6 +1356,20 @@ export default function App() {
     ];
     if (r.sinPlan.length) partes.push(`${r.sinPlan.length} clientes no tienen plan con precio y se saltaron: ${r.sinPlan.slice(0, 5).join(", ")}${r.sinPlan.length > 5 ? "…" : ""}`);
     setAvisoMsg(partes.join(" "));
+    loadAll();
+  };
+
+  const guardarCargos = async (factura, lista) => {
+    const base = (Number(factura.monto) || 0) - sumaCargos(cargosDe(factura));
+    const monto = Math.round((base + sumaCargos(lista)) * 100) / 100;
+    const { error } = await supabase.from("facturas").update({ cargos: lista, monto }).eq("id", factura.id);
+    if (error) {
+      setErrorMsg(/cargos/i.test(error.message || "")
+        ? "Para guardar cargos adicionales falta preparar la base de datos en Supabase (ver instrucciones)."
+        : error.message);
+      return;
+    }
+    setCargoModal(null);
     loadAll();
   };
 
@@ -1970,6 +1990,7 @@ export default function App() {
                         <thead>
                           <tr style={{ color: COLORS.dim, backgroundColor: COLORS.panel2 }}>
                             <th className="text-left font-medium px-3 py-2.5">Nombre</th>
+                            <th className="text-left font-medium px-3 py-2.5">Teléfono</th>
                             <th className="text-left font-medium px-3 py-2.5">Servicio</th>
                             <th className="text-left font-medium px-3 py-2.5">IP</th>
                             <th className="text-left font-medium px-3 py-2.5">Plan</th>
@@ -1999,6 +2020,9 @@ export default function App() {
                                   {c.direccion && (
                                     <div className="text-xs truncate" style={{ color: COLORS.dim, maxWidth: 240 }}>{c.direccion}</div>
                                   )}
+                                </td>
+                                <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
+                                  {c.telefono || <span style={{ color: COLORS.dim }}>—</span>}
                                 </td>
                                 <td className="px-3 py-2.5">
                                   <span className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap">
@@ -2060,6 +2084,7 @@ export default function App() {
                                 <div className="text-xs" style={{ color: COLORS.dim }}>
                                   {plan ? plan.nombre : "Sin plan"}
                                   {c.ip_asignada ? `, ${c.ip_asignada}` : ""}
+                                  {c.telefono ? `, Tel. ${c.telefono}` : ""}
                                 </div>
                               </div>
                               <EstadoBadge estado={c.estado} />
@@ -2328,11 +2353,27 @@ export default function App() {
                         style={{ backgroundColor: COLORS.panel, borderTop: `1px solid ${COLORS.border}` }}
                       >
                         <div>
-                          <div className="text-sm font-medium">{c ? c.nombre : "Cliente eliminado"}</div>
+                          <div className="text-sm font-medium">
+                            {c ? c.nombre : "Cliente eliminado"}
+                            {c?.telefono && (
+                              <span className="font-mono text-xs font-normal ml-2" style={{ color: COLORS.dim }}>
+                                <Phone size={11} style={{ display: "inline", verticalAlign: "-1px" }} /> {c.telefono}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs" style={{ color: COLORS.dim }}>
                             {f.numero_wisphub ? `#${f.numero_wisphub} · ` : ""}Periodo: {f.periodo} · Vence: {f.fecha_vencimiento || "—"}
                             {f.prorroga_hasta && <span style={{ color: COLORS.warn }}> · Prórroga hasta {f.prorroga_hasta}</span>}
                           </div>
+                          {cargosDe(f).length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {cargosDe(f).map((x, i) => (
+                                <span key={i} className="rounded-full px-2 py-0.5 text-xs" style={{ color: COLORS.accent, backgroundColor: COLORS.accent + "1A", border: `1px solid ${COLORS.accent}40` }}>
+                                  + {x.descripcion} {money(x.monto)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                           <div className="text-xs mt-0.5" style={{ color: COLORS.dim }}>
                             Creada por: <span style={{ color: COLORS.text }}>{quienCreo(f)}</span>
                             {quienCobro(f) && (
@@ -2350,6 +2391,16 @@ export default function App() {
                             <Button variant="ghost" onClick={() => setPagoModal(f)}>
                               Marcar pagada
                             </Button>
+                          )}
+                          {f.estado !== "pagada" && (
+                            <button
+                              onClick={() => setCargoModal(f)}
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium"
+                              style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, backgroundColor: COLORS.accent + "1A" }}
+                              title="Agregar traslado, venta de equipo u otro costo a esta factura"
+                            >
+                              <Plus size={13} /> Cargo
+                            </button>
                           )}
                           {f.estado !== "pagada" && !esCajero && (
                             <button
@@ -2579,6 +2630,14 @@ export default function App() {
           tamano={config?.tamano_recibo || "mediano"}
           formatoDefault={config?.formato_recibo || "termica"}
           onClose={() => setReciboModal(null)}
+        />
+      )}
+      {cargoModal && (
+        <CargoModal
+          factura={cargoModal}
+          cliente={clientes.find((c) => c.id === cargoModal.cliente_id)}
+          onCancel={() => setCargoModal(null)}
+          onSave={(lista) => guardarCargos(cargoModal, lista)}
         />
       )}
       {migracionModal && (
@@ -3566,6 +3625,7 @@ function dibujarReciboImagen(d, logo) {
   texto("Descripción", "bold 14px Arial");
   y += 20;
   partir(d.servicio, "14px Arial", W - P * 2).forEach((l) => { texto(l, "14px Arial"); y += 20; });
+  (d.cargos || []).forEach((t) => { partir(t, "14px Arial", W - P * 2).forEach((l) => { texto(l, "14px Arial"); y += 20; }); });
   partir(d.periodo, "13px Arial", W - P * 2).forEach((l) => { texto(l, "13px Arial", "#555"); y += 19; });
   raya();
   fila("Subtotal:", d.subtotal);
@@ -3601,6 +3661,9 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
   const subtotalV = det ? det.total : Number(factura.monto) || 0;
   const suPagoV = det ? det.recibido : pagada ? Number(factura.monto) || 0 : 0;
   const saldoV = det ? det.pendiente : pagada ? 0 : Number(factura.monto) || 0;
+  const cargosR = cargosDe(factura);
+  const baseR = Math.round(((Number(factura.monto) || 0) - sumaCargos(cargosR)) * 100) / 100;
+  const lineasCargos = cargosR.map((c) => `+ ${c.descripcion}: ${money(c.monto)}`);
   const extrasRecibo = [
     det?.meses?.length ? `Meses adelantados: ${det.meses.join(", ")}` : "",
     det?.saldoFavor > 0 ? `Saldo a favor: ${money(det.saldoFavor)}` : "",
@@ -3613,7 +3676,8 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
     `Fecha: ${fecha.toLocaleDateString("es-DO")} ${fecha.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}`,
     "",
     `Cliente: ${cliente?.nombre || "—"}`,
-    `Servicio: Internet${plan ? ` - Plan ${plan.nombre}` : ""}`,
+    ...(cargosR.length && baseR <= 0 ? [] : [`Servicio: Internet${plan ? ` - Plan ${plan.nombre}` : ""}`]),
+    ...lineasCargos,
     `Periodo: ${factura.periodo || "—"}`,
     "",
     pagada ? `*Monto pagado: ${money(suPagoV)}*` : `*Monto a pagar: ${money(factura.monto)}*`,
@@ -3648,7 +3712,8 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
           cliente: cliente?.nombre || "—",
           telefono: cliente?.telefono || "",
           formaPago: pagada ? formaPagoTexto : "—",
-          servicio: `Servicio de Internet${plan ? ` — Plan ${plan.nombre}` : ""}`,
+          servicio: cargosR.length && baseR <= 0 ? "Cargos adicionales" : `Servicio de Internet${plan ? ` — Plan ${plan.nombre}` : ""}${cargosR.length ? `: ${money(baseR)}` : ""}`,
+          cargos: lineasCargos,
           periodo: `Periodo: ${factura.periodo || "—"}${factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}`,
           subtotal: money(subtotalV),
           descuento: money(0),
@@ -3797,7 +3862,10 @@ function ReciboModal({ factura, cliente, plan, cajeroNombre, empresa, tamano, fo
 
           <div style={{ fontSize: sz(formato === "termica" ? 15 : 16), marginBottom: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 2 }}>Descripción</div>
-            <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}</div>
+            {!(cargosR.length && baseR <= 0) && (
+              <div>Servicio de Internet{plan ? ` — Plan ${plan.nombre}` : ""}{cargosR.length ? `: ${money(baseR)}` : ""}</div>
+            )}
+            {lineasCargos.map((t) => <div key={t}>{t}</div>)}
             <div style={{ color: "#555" }}>Periodo: {factura.periodo || "—"}{factura.fecha_vencimiento ? ` · Vence: ${factura.fecha_vencimiento}` : ""}</div>
           </div>
 
@@ -6399,6 +6467,98 @@ function BuscadorCliente({ clientes, planById, valor, onElegir }) {
   );
 }
 
+const CARGOS_RAPIDOS = ["Traslado", "Reconexión", "Instalación", "Venta de router", "Venta de ONU", "Cable / material", "Visita técnica"];
+
+// Cargos adicionales de una factura (traslado, equipo, etc.), guardados en la columna "cargos".
+function cargosDe(f) {
+  let c = f?.cargos;
+  if (typeof c === "string") {
+    try { c = JSON.parse(c); } catch (e) { c = []; }
+  }
+  return Array.isArray(c) ? c.filter((x) => x && x.descripcion) : [];
+}
+const sumaCargos = (lista) => lista.reduce((s, x) => s + (Number(x.monto) || 0), 0);
+
+// Editor de una lista de cargos: descripción + precio, con botones rápidos.
+function EditorCargos({ lista, onChange }) {
+  const [desc, setDesc] = useState("");
+  const [monto, setMonto] = useState("");
+  const agregar = () => {
+    if (!desc.trim() || !(Number(monto) > 0)) return;
+    onChange([...lista, { descripcion: desc.trim(), monto: Math.round(Number(monto) * 100) / 100 }]);
+    setDesc("");
+    setMonto("");
+  };
+  return (
+    <div className="rounded-lg p-3 mb-3" style={{ backgroundColor: COLORS.panel2, border: `1px solid ${COLORS.border}` }}>
+      {lista.length > 0 && (
+        <div className="mb-3">
+          {lista.map((c, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 py-1 text-sm" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+              <span className="truncate">{c.descripcion}</span>
+              <span className="flex items-center gap-2 shrink-0">
+                <span className="font-mono">{money(c.monto)}</span>
+                <button type="button" title="Quitar" onClick={() => onChange(lista.filter((_, j) => j !== i))} style={{ color: COLORS.danger }}>
+                  <X size={14} />
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {CARGOS_RAPIDOS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setDesc(t)}
+            className="rounded-full px-2 py-0.5 text-xs"
+            style={{ border: `1px solid ${desc === t ? COLORS.accent : COLORS.border}`, color: desc === t ? COLORS.accent : COLORS.dim }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input style={{ ...inputStyle, flex: 2 }} placeholder="Descripción (ej. Traslado a calle 5)" value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <input type="number" style={{ ...inputStyle, flex: 1 }} placeholder="RD$" value={monto} onChange={(e) => setMonto(e.target.value)} onKeyDown={(e) => e.key === "Enter" && agregar()} />
+        <Button variant="ghost" onClick={agregar}><Plus size={14} /></Button>
+      </div>
+    </div>
+  );
+}
+
+// Ventana para agregar o quitar cargos de una factura pendiente.
+function CargoModal({ factura, cliente, onCancel, onSave }) {
+  const actuales = cargosDe(factura);
+  const base = Math.round(((Number(factura.monto) || 0) - sumaCargos(actuales)) * 100) / 100;
+  const [lista, setLista] = useState(actuales);
+  const [guardando, setGuardando] = useState(false);
+  const total = base + sumaCargos(lista);
+  return (
+    <Modal title="Cargos adicionales" onClose={onCancel}>
+      <p className="text-xs mb-3" style={{ color: COLORS.dim }}>
+        {cliente?.nombre} · Factura {factura.periodo}. Lo que agregues se suma a esta factura y sale detallado en el recibo.
+      </p>
+      <div className="flex justify-between text-sm mb-2">
+        <span style={{ color: COLORS.dim }}>Mensualidad / monto original</span>
+        <span className="font-mono">{money(base)}</span>
+      </div>
+      <EditorCargos lista={lista} onChange={setLista} />
+      <div className="flex justify-between text-sm font-semibold mb-4">
+        <span>Total de la factura</span>
+        <span className="font-mono">{money(total)}</span>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button disabled={guardando} onClick={async () => { setGuardando(true); await onSave(lista); setGuardando(false); }}>
+          {guardando ? "Guardando…" : "Guardar"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
   const hoy = new Date();
   const [form, setForm] = useState({
@@ -6409,6 +6569,8 @@ function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
     fechaVencimiento: initial.fechaVencimiento || "",
     estado: initial.estado || "pendiente",
   });
+  const [cargos, setCargos] = useState([]);
+  const [soloCargos, setSoloCargos] = useState(false);
   const [error, setError] = useState("");
 
   // Al elegir el cliente se llenan solos el monto de su plan y el vencimiento de su corte.
@@ -6418,16 +6580,36 @@ function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
     setForm((f) => ({
       ...f,
       clienteId: c.id,
-      monto: plan ? plan.precio : f.monto,
-      fechaVencimiento: f.fechaVencimiento || fmtISO(vencimiento),
+      monto: soloCargos ? 0 : plan ? plan.precio : f.monto,
+      fechaVencimiento: f.fechaVencimiento || (soloCargos ? fmtISO(new Date()) : fmtISO(vencimiento)),
     }));
     setError("");
   };
 
+  const cambiarSoloCargos = (v) => {
+    setSoloCargos(v);
+    const c = clientes.find((x) => x.id === form.clienteId);
+    const plan = c ? planById(c.plan_id) : null;
+    setForm((f) => ({
+      ...f,
+      monto: v ? 0 : plan ? plan.precio : "",
+      periodo: v ? cargos[0]?.descripcion || "Cargo adicional" : `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`,
+      fechaVencimiento: v ? fmtISO(new Date()) : c ? fmtISO(cicloInfo(c.ciclo || 15, new Date()).vencimiento) : "",
+    }));
+  };
+
+  const base = Number(form.monto) || 0;
+  const total = base + sumaCargos(cargos);
+
   const guardar = () => {
     if (!form.clienteId) return setError("Elige el cliente.");
-    if (!Number(form.monto)) return setError("Escribe el monto.");
-    onSave(form);
+    if (!(total > 0)) return setError(soloCargos ? "Agrega al menos un cargo con su precio." : "Escribe el monto.");
+    onSave({
+      ...form,
+      monto: total,
+      cargos,
+      periodo: soloCargos && (!form.periodo || form.periodo === "Cargo adicional") ? cargos.map((c) => c.descripcion).join(", ") : form.periodo,
+    });
   };
 
   return (
@@ -6436,15 +6618,29 @@ function InvoiceForm({ initial, clientes, planById, onCancel, onSave }) {
         <span className="block text-xs mb-1" style={{ color: COLORS.dim }}>Cliente</span>
         <BuscadorCliente clientes={clientes} planById={planById} valor={form.clienteId} onElegir={elegirCliente} />
       </div>
-      <Field label="Periodo">
-        <input style={inputStyle} placeholder="Ej. octubre 2026" value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
+      <label className="flex items-center gap-2 text-xs mb-3" style={{ color: COLORS.dim }}>
+        <input type="checkbox" checked={soloCargos} onChange={(e) => cambiarSoloCargos(e.target.checked)} />
+        Solo cargos adicionales, sin mensualidad (traslado, venta de equipo…)
+      </label>
+      <Field label={soloCargos ? "Concepto" : "Periodo"}>
+        <input style={inputStyle} placeholder={soloCargos ? "Ej. Traslado" : "Ej. octubre 2026"} value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
       </Field>
-      <Field label="Monto (RD$)">
-        <input type="number" style={inputStyle} value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} />
-      </Field>
+      {!soloCargos && (
+        <Field label="Mensualidad (RD$)">
+          <input type="number" style={inputStyle} value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} />
+        </Field>
+      )}
+      <span className="block text-xs mb-1" style={{ color: COLORS.dim }}>
+        Cargos adicionales {soloCargos ? "" : "(opcional)"}
+      </span>
+      <EditorCargos lista={cargos} onChange={setCargos} />
       <Field label="Fecha de vencimiento">
         <input type="date" style={inputStyle} value={form.fechaVencimiento} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} />
       </Field>
+      <div className="flex justify-between text-sm font-semibold mb-2">
+        <span>Total de la factura</span>
+        <span className="font-mono">{money(total)}</span>
+      </div>
       {error && <p className="text-xs mb-2" style={{ color: COLORS.danger }}>{error}</p>}
       <div className="flex justify-end gap-2 mt-4">
         <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
